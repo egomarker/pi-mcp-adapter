@@ -3,7 +3,7 @@ import { UrlElicitationRequiredError, type Client, type Progress, type RequestOp
 import { createRequire } from "node:module";
 import type { McpExtensionState } from "./state.ts";
 import type { ToolMetadata, McpContent } from "./types.ts";
-import { getServerPrefix, isServerDisabled, parseUiPromptHandoff } from "./types.ts";
+import { getServerPrefix, isServerDisabled, isToolAllowed, parseUiPromptHandoff } from "./types.ts";
 import { lazyConnect, markKeepAliveAfterConnect, notifyToolMetadataUpdated, updateServerMetadata, updateMetadataCache, getFailureAgeSeconds, updateStatusBar, clearFailure, recordFailure } from "./init.ts";
 import { abortable, throwIfAborted } from "./abort.ts";
 import { combineAbortSignals, isAbortError } from "./runtime-owner.ts";
@@ -1074,7 +1074,12 @@ export async function executeCall(
       .filter(c => c.prefix && toolName.startsWith(c.prefix + "_"))
       .sort((a, b) => b.prefix.length - a.prefix.length);
 
-    for (const { name: configuredServer } of candidates) {
+    for (const { name: configuredServer, prefix } of candidates) {
+      const definition = state.config.mcpServers[configuredServer];
+      const requestedOriginalName = toolName.slice(prefix.length + 1);
+      // Enforce configured selectors before lazyConnect: denied prefixed names
+      // must cause zero connection/transport requests and leak no metadata.
+      if (!isToolAllowed(requestedOriginalName, configuredServer, prefixMode, definition?.includeTools, definition?.excludeTools)) continue;
       const existingConnection = state.manager.getConnection(configuredServer);
       const failedAgo = getFailureAgeSeconds(state, configuredServer);
       if (failedAgo !== null && existingConnection?.status !== "needs-auth") continue;
