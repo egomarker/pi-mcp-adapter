@@ -14,7 +14,12 @@
       "types": "./types.ts",
       "import": "./types.ts",
       "default": "./types.ts"
-    }
+    },
+    "./config.ts": "./config.ts",
+    "./metadata-cache.ts": "./metadata-cache.ts",
+    "./resource-tools.ts": "./resource-tools.ts",
+    "./types.ts": "./types.ts",
+    "./utils.ts": "./utils.ts"
   },
   "license": "MIT",
   "author": "Nico Bailon",
