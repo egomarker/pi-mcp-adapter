@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { DIRECT_TOOLS_ADVISORY_THRESHOLD, buildProxyDescription, resolveDirectTools } from "../direct-tools.ts";
 import {
+  bindServerCacheEnvironment,
   computeServerHash,
   getMissingConfiguredDirectToolServers,
   isServerCacheValid,
@@ -185,6 +186,14 @@ describe("metadata cache hashing", () => {
       tools: [],
       resources: [],
     }, definition, undefined, { PRIVATE_TOKEN: "first" })).toBe(true);
+  });
+
+  it("rebinds freshly loaded cache entries to a live connection environment without persisting it", () => {
+    const definition={url:"${SCOPED_URL}"};
+    const entry={configHash:computeServerHash(definition,{SCOPED_URL:"https://scoped.example/mcp"}),cachedAt:Date.now(),tools:[],resources:[]};
+    expect(isServerCacheValid(entry,definition)).toBe(false);
+    bindServerCacheEnvironment(entry,{SCOPED_URL:"https://scoped.example/mcp"});
+    expect(isServerCacheValid(entry,definition)).toBe(true);
   });
 
   it("does not hash URL placeholders with missing environment variables", () => {

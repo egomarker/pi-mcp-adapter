@@ -458,6 +458,22 @@ describe("mcp-auth-flow explicit auth", () => {
     expect(mocks.sdkAuth).toHaveBeenCalledTimes(1);
   });
 
+  it("refreshes pre-registered clients with their configured secret and scoped env", async () => {
+    mocks.sdkAuth.mockImplementationOnce(async (provider) => {
+      expect(await provider.clientInformation()).toMatchObject({client_id:"configured-client",client_secret:"scoped-secret"});
+      await provider.saveTokens({access_token:"new-access",token_type:"Bearer",refresh_token:"new-refresh",expires_in:3600});
+      return "AUTHORIZED";
+    });
+    const {getValidToken}=await import("../mcp-auth-flow.ts");
+    const {updateClientInfo,updateTokens}=await import("../mcp-auth.ts");
+    updateClientInfo("pre-registered-refresh",{clientId:"configured-client",issuer:"https://auth.example.com",configPreRegistered:true},"https://api.example.com/mcp");
+    updateTokens("pre-registered-refresh",{accessToken:"old",refreshToken:"refresh",expiresAt:Date.now()/1000-60},"https://api.example.com/mcp");
+    await expect(getValidToken("pre-registered-refresh","https://api.example.com/mcp",{
+      definition:{url:"https://api.example.com/mcp",auth:"oauth",oauth:{clientId:"configured-client",clientSecret:"${CLIENT_SECRET}"}},
+      runtimeEnv:{CLIENT_SECRET:"scoped-secret"},
+    })).resolves.toMatchObject({accessToken:"new-access"});
+  });
+
   it("passes the issuer metadata validation opt-out during token refresh", async () => {
     mocks.sdkAuth.mockImplementationOnce(async (provider) => {
       await provider.saveTokens({

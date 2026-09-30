@@ -497,6 +497,22 @@ describe("McpServerManager sampling", () => {
     expect(mocks.transports[1].options).toMatchObject({ cwd: "/tmp/pi-mcp-home/nested" });
   });
 
+  it("passes only the server-scoped runtime env to stdio and refreshes it per connect", async () => {
+    const { McpServerManager } = await import("../server-manager.ts");
+    process.env.UNRELATED_PROCESS_SECRET = "must-not-be-inherited";
+    let generation = 0;
+    const manager = new McpServerManager(undefined, () => ({
+      PATH: "/scoped/bin",
+      TOKEN: `token-${++generation}`,
+    }));
+    await manager.connect("first", { command: "node", args: ["${TOKEN}"], env: { COPY: "$env:TOKEN" } });
+    await manager.connect("second", { command: "node", args: ["${TOKEN}"], env: { COPY: "$env:TOKEN" } });
+    expect(mocks.transports[0].options).toMatchObject({ args: ["token-1"], env: { PATH: "/scoped/bin", TOKEN: "token-1", COPY: "token-1" } });
+    expect(mocks.transports[1].options).toMatchObject({ args: ["token-2"], env: { PATH: "/scoped/bin", TOKEN: "token-2", COPY: "token-2" } });
+    expect(mocks.transports[0].options.env.UNRELATED_PROCESS_SECRET).toBeUndefined();
+    delete process.env.UNRELATED_PROCESS_SECRET;
+  });
+
   it("uses the session cwd for stdio servers without an explicit cwd", async () => {
     const { McpServerManager } = await import("../server-manager.ts");
     mkdirSync("/tmp/pi-session-cwd", { recursive: true });

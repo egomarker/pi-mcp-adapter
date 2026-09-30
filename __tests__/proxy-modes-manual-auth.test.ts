@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   completeAuthFromInput: vi.fn(),
+  getPendingAuthorizationUrl: vi.fn(),
   startAuth: vi.fn(),
   supportsOAuth: vi.fn(),
   lazyConnect: vi.fn(),
@@ -16,6 +17,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../mcp-auth-flow.ts", () => ({
   authenticate: vi.fn(),
   completeAuthFromInput: mocks.completeAuthFromInput,
+  getPendingAuthorizationUrl: mocks.getPendingAuthorizationUrl,
   startAuth: mocks.startAuth,
   supportsOAuth: mocks.supportsOAuth,
 }));
@@ -52,6 +54,7 @@ describe("manual OAuth proxy actions", () => {
   beforeEach(() => {
     vi.resetModules();
     mocks.completeAuthFromInput.mockReset().mockResolvedValue("authenticated");
+    mocks.getPendingAuthorizationUrl.mockReset().mockReturnValue(undefined);
     mocks.startAuth.mockReset().mockResolvedValue({
       authorizationUrl: "https://auth.example.com/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A19876%2Fcallback",
     });
@@ -82,6 +85,16 @@ describe("manual OAuth proxy actions", () => {
     expect(result.content[0].text).toContain('args: { code: "PASTE_CODE_HERE" }');
     expect(result.content[0].text).toContain("JSON-string args remain supported");
     expect(result.details).toMatchObject({ mode: "auth-start", server: "demo" });
+  });
+
+  it("reuses a pending authorization URL without resolving runtime secrets again", async () => {
+    mocks.getPendingAuthorizationUrl.mockReturnValueOnce("https://auth.example.com/pending");
+    const resolver=vi.fn(()=>({SECRET:"unused"}));
+    const { executeAuthStart }=await import("../proxy-modes.ts");
+    const result=await executeAuthStart(createState({resolveRuntimeEnv:resolver}),"demo");
+    expect(result.details).toMatchObject({authorizationUrl:"https://auth.example.com/pending"});
+    expect(resolver).not.toHaveBeenCalled();
+    expect(mocks.startAuth).not.toHaveBeenCalled();
   });
 
   it("explains manual completion for pre-registered HTTPS callbacks", async () => {

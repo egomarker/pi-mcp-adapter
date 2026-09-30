@@ -1215,6 +1215,22 @@ describe("mcpAdapter session lifecycle", () => {
     expect(mocks.initializeMcp.mock.calls[0][3].config).not.toBe(config);
   });
 
+  it("never exposes unbound persistent cache entries in scoped-env mode", async () => {
+    const config={mcpServers:{memory:{url:"https://memory.example/mcp",directTools:true}}};
+    const staleCache={version:1,servers:{memory:{configHash:"stale",cachedAt:Date.now(),tools:[{name:"search"}],resources:[]}}};
+    mocks.loadMetadataCache.mockReturnValue(staleCache);
+    mocks.resolveDirectTools.mockImplementation((_config:any,cache:any)=>cache?.servers?.memory?[{serverName:"memory",originalName:"search",prefixedName:"memory_search",description:"stale"}]:[]);
+    const resolver=vi.fn(()=>({TOKEN:"scoped"}));
+    const state=createState();state.config=structuredClone(config);state.resolveRuntimeEnv=resolver;
+    mocks.initializeMcp.mockResolvedValue(state);
+    const {createMcpAdapter}=await import("../index.ts");const {api,handlers}=createPi();
+    createMcpAdapter({config,resolveRuntimeEnv:resolver})(api);
+    expect(api.registerTool).not.toHaveBeenCalledWith(expect.objectContaining({name:"memory_search"}));
+    await handlers.get("session_start")?.({}, {hasUI:false});
+    expect(api.registerTool).not.toHaveBeenCalledWith(expect.objectContaining({name:"memory_search"}));
+    expect(resolver).not.toHaveBeenCalled();
+  });
+
   it("adds strict direct-tool argument preparation only when configured", async () => {
     const inputSchema = {
       type: "object",

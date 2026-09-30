@@ -49,6 +49,34 @@ describe("npx-resolver", () => {
     expect(existsSync(join(home, ".pi", "agent", "mcp-npx-cache.json"))).toBe(false);
   });
 
+  it("uses the scoped npm cache instead of ambient process configuration", async () => {
+    const home = mkdtempSync(join(tmpdir(), "pi-mcp-npx-home-"));
+    const agentDir = mkdtempSync(join(tmpdir(), "pi-mcp-npx-agent-"));
+    const ambientCache = mkdtempSync(join(tmpdir(), "pi-mcp-npx-ambient-"));
+    const scopedCache = mkdtempSync(join(tmpdir(), "pi-mcp-npx-scoped-"));
+    process.env.HOME = home;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    process.env.NPM_CONFIG_CACHE = ambientCache;
+    writeCachedPackage(scopedCache, "demo-pkg");
+    const { resolveNpxBinary } = await import("../npx-resolver.ts");
+    const result = await resolveNpxBinary("npx", ["-y", "demo-pkg"], undefined, { NPM_CONFIG_CACHE: scopedCache });
+    expect(result?.binPath).toContain(scopedCache);
+    expect(result?.binPath).not.toContain(ambientCache);
+  });
+
+  it("does not reuse a resolved binary across scoped environments", async () => {
+    const home=mkdtempSync(join(tmpdir(),"pi-mcp-npx-home-"));
+    const agentDir=mkdtempSync(join(tmpdir(),"pi-mcp-npx-agent-"));
+    const firstCache=mkdtempSync(join(tmpdir(),"pi-mcp-npx-first-"));
+    const secondCache=mkdtempSync(join(tmpdir(),"pi-mcp-npx-second-"));
+    process.env.HOME=home;process.env.PI_CODING_AGENT_DIR=agentDir;
+    writeCachedPackage(firstCache,"demo-pkg");writeCachedPackage(secondCache,"demo-pkg");
+    const {resolveNpxBinary}=await import("../npx-resolver.ts");
+    const first=await resolveNpxBinary("npx",["-y","demo-pkg"],undefined,{NPM_CONFIG_CACHE:firstCache});
+    const second=await resolveNpxBinary("npx",["-y","demo-pkg"],undefined,{NPM_CONFIG_CACHE:secondCache});
+    expect(first?.binPath).toContain(firstCache);expect(second?.binPath).toContain(secondCache);
+  });
+
   it("removes stale version-1 cache files on module import", async () => {
     const home = mkdtempSync(join(tmpdir(), "pi-mcp-npx-home-"));
     const agentDir = mkdtempSync(join(tmpdir(), "pi-mcp-npx-agent-"));

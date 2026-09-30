@@ -18,7 +18,7 @@ import {
 } from "./config.ts";
 import { markKeepAliveAfterConnect, notifyToolMetadataUpdated, updateMetadataCache, updateStatusBar, getFailureAgeSeconds, getFailureMessage, clearFailure, recordFailure } from "./init.ts";
 import { isServerInActiveFailureBackoff } from "./failure-backoff.ts";
-import { loadMetadataCache, reconstructPromptMetadata } from "./metadata-cache.ts";
+import { bindServerCacheEnvironment, loadMetadataCache, reconstructPromptMetadata } from "./metadata-cache.ts";
 import { buildToolMetadata } from "./tool-metadata.ts";
 import { supportsOAuth, authenticate, removeAuth, type McpOAuthRuntime } from "./mcp-auth-flow.ts";
 import { getAuthStorageOptions, inspectAuthForUrl } from "./mcp-auth.ts";
@@ -265,6 +265,7 @@ export async function authenticateServer(
   ctx: ExtensionContext,
   signal?: AbortSignal,
   runtime?: McpOAuthRuntime,
+  runtimeEnv?: Readonly<NodeJS.ProcessEnv>,
 ): Promise<McpAuthResult> {
   const ui = ctx.hasUI ? ctx.ui : undefined;
   const cwd = ctx.cwd;
@@ -294,7 +295,7 @@ export async function authenticateServer(
   }
 
   try {
-    const serverUrl = resolveServerUrl(definition);
+    const serverUrl = resolveServerUrl(definition, runtimeEnv);
     if (!serverUrl) {
       const message = `Server "${serverName}" has no URL configured (OAuth requires HTTP transport)`;
       ui.notify(message, "error");
@@ -318,6 +319,7 @@ export async function authenticateServer(
       },
       ...(signal ? { signal } : {}),
       ...(runtime ? { runtime } : {}),
+      ...(runtimeEnv ? { runtimeEnv } : {}),
     });
     if (signal?.aborted) signal.throwIfAborted();
 
@@ -403,7 +405,7 @@ function validateBearerTokenStoreServer(
   // because the URL can carry userinfo or interpolated secrets.
   let serverUrl: string | undefined;
   try {
-    serverUrl = resolveServerUrl(definition);
+    serverUrl = resolveServerUrl(definition, state.resolveRuntimeEnv ? {} : process.env);
   } catch {
     return { ok: false, message: `Server "${safeName}" has an invalid or unresolvable URL.`, type: "error" };
   }
@@ -577,7 +579,10 @@ function buildMcpPanelCallbacks(
       const overlay = getOverlayHandle?.();
       overlay?.setHidden(true);
       try {
-        return await authenticateServer(serverName, config, ctx, state.owner?.signal, state.oauthRuntime);
+        const runtimeEnv = state.resolveRuntimeEnv?.(serverName);
+        return runtimeEnv
+          ? await authenticateServer(serverName, config, ctx, state.owner?.signal, state.oauthRuntime, runtimeEnv)
+          : await authenticateServer(serverName, config, ctx, state.owner?.signal, state.oauthRuntime);
       } finally {
         overlay?.setHidden(false);
         overlay?.focus();
@@ -588,9 +593,14 @@ function buildMcpPanelCallbacks(
       const definition = config.mcpServers[serverName];
       if (isServerDisabled(definition)) return "disabled";
       const connection = state.manager.getConnection(serverName);
+      if (connection?.status === "connected") return "connected";
+      if (connection?.status === "needs-auth") return "needs-auth";
+      if (state.resolveRuntimeEnv && !connection) {
+        return getFailureAgeSeconds(state, serverName) !== null ? "failed" : "idle";
+      }
       let serverUrl: string | undefined;
       try {
-        serverUrl = definition ? resolveServerUrl(definition) : undefined;
+        serverUrl = definition ? resolveServerUrl(definition, connection?.runtimeEnv ?? process.env) : undefined;
       } catch {
         return "failed";
       }
@@ -609,15 +619,16 @@ function buildMcpPanelCallbacks(
           return "needs-auth";
         }
       }
-      if (connection?.status === "needs-auth") return "needs-auth";
-      if (connection?.status === "connected") return "connected";
       if (getFailureAgeSeconds(state, serverName) !== null) return "failed";
       return "idle";
     },
     getFailureMessage: (serverName: string) => authStatusFailures.get(serverName) ?? getFailureMessage(state, serverName),
     refreshCacheAfterReconnect: (serverName: string) => {
       const freshCache = loadMetadataCache();
-      return freshCache?.servers?.[serverName] ?? null;
+      const entry = freshCache?.servers?.[serverName];
+      const connection = state.manager.getConnection(serverName);
+      if (entry && connection?.status === "connected") bindServerCacheEnvironment(entry, connection.runtimeEnv);
+      return entry ?? null;
     },
   };
 }
@@ -646,7 +657,7 @@ export async function openMcpPanel(
   }
 
   const config = state.config;
-  const cache = loadMetadataCache();
+  const cache = state.resolveRuntimeEnv ? null : loadMetadataCache();
   const configPath = pi.getFlag("mcp-config") as string | undefined ?? configOverridePath;
   const provenanceMap = getServerProvenance(configPath, ctx.cwd);
   const { lines: noticeLines, fingerprint } = buildSharedConfigNoticeLines(configPath, ctx.cwd);
@@ -718,7 +729,7 @@ export async function openMcpAuthPanel(
     return { configChanged: false };
   }
 
-  const cache = loadMetadataCache();
+  const cache = state.resolveRuntimeEnv ? null : loadMetadataCache();
   const configPath = pi.getFlag("mcp-config") as string | undefined ?? configOverridePath;
   const provenanceMap = getServerProvenance(configPath, ctx.cwd);
   let overlayHandle: OverlayHandle | undefined;

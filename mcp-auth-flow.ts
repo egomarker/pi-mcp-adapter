@@ -55,6 +55,9 @@ export interface AuthenticateOptions {
     signal: AbortSignal,
   ) => Promise<string | undefined>
   authStorageOptions?: AuthStorageOptions
+  /** Server definition required when refreshing pre-registered OAuth clients. */
+  definition?: ServerEntry
+  runtimeEnv?: Readonly<NodeJS.ProcessEnv> | undefined
   signal?: AbortSignal
   runtime?: McpOAuthRuntime
   skipIssuerMetadataValidation?: boolean
@@ -133,11 +136,13 @@ function getPendingAuthKey(serverName: string, options: AuthStorageOptions): str
 }
 
 export function hasPendingAuth(serverName: string, options?: AuthStorageOptions, runtime?: McpOAuthRuntime): boolean {
+  return getPendingAuthorizationUrl(serverName, options, runtime) !== undefined
+}
+
+export function getPendingAuthorizationUrl(serverName: string, options?: AuthStorageOptions, runtime?: McpOAuthRuntime): string | undefined {
   const state = getRuntimeState(runtime ?? legacyRuntime)
-  if (options) {
-    return state.pendingAuths.has(getPendingAuthKey(serverName, options))
-  }
-  return Array.from(state.pendingAuths.values()).some(pendingAuth => pendingAuth.serverName === serverName)
+  if (options) return state.pendingAuths.get(getPendingAuthKey(serverName, options))?.authorizationUrl
+  return Array.from(state.pendingAuths.values()).find(pendingAuth => pendingAuth.serverName === serverName)?.authorizationUrl
 }
 
 /** Timeout for manual auth completion (5 minutes) */
@@ -155,7 +160,7 @@ function generateState(): string {
 /**
  * Extract OAuth configuration from a ServerEntry.
  */
-export function extractOAuthConfig(definition: ServerEntry): McpOAuthConfig {
+export function extractOAuthConfig(definition: ServerEntry, runtimeEnv: Readonly<NodeJS.ProcessEnv> = process.env): McpOAuthConfig {
   if (definition.oauth === false) {
     return {}
   }
@@ -164,18 +169,18 @@ export function extractOAuthConfig(definition: ServerEntry): McpOAuthConfig {
   if (definition.oauth?.grantType !== undefined) config.grantType = definition.oauth.grantType
   if (definition.oauth?.clientId !== undefined) {
     if (typeof definition.oauth.clientId !== "string") throw new Error("OAuth clientId must be a string")
-    config.clientId = interpolateEnvVars(definition.oauth.clientId)
+    config.clientId = interpolateEnvVars(definition.oauth.clientId, runtimeEnv)
   }
   if (definition.oauth?.clientSecret !== undefined) {
     if (typeof definition.oauth.clientSecret !== "string") throw new Error("OAuth clientSecret must be a string")
     // Preserve command expressions for the provider; interpolation remains eager for ordinary values.
     config.clientSecret = definition.oauth.clientSecret.startsWith("!")
       ? definition.oauth.clientSecret
-      : interpolateEnvVars(definition.oauth.clientSecret)
+      : interpolateEnvVars(definition.oauth.clientSecret, runtimeEnv)
   }
   if (definition.oauth?.scope !== undefined) {
     if (typeof definition.oauth.scope !== "string") throw new Error("OAuth scope must be a string")
-    config.scope = interpolateEnvVars(definition.oauth.scope)
+    config.scope = interpolateEnvVars(definition.oauth.scope, runtimeEnv)
   }
   if (definition.oauth?.authorizationParams !== undefined) {
     const params = definition.oauth.authorizationParams
@@ -186,14 +191,14 @@ export function extractOAuthConfig(definition: ServerEntry): McpOAuthConfig {
     for (const [key, value] of Object.entries(params)) {
       if (!key) throw new Error("OAuth authorizationParams keys must not be empty")
       if (typeof value !== "string") throw new Error(`OAuth authorizationParams.${key} must be a string`)
-      config.authorizationParams[key] = interpolateEnvVars(value)
+      config.authorizationParams[key] = interpolateEnvVars(value, runtimeEnv)
     }
   }
   if (definition.oauth?.redirectUri !== undefined) {
     if (typeof definition.oauth.redirectUri !== "string") {
       throw new Error("OAuth redirectUri must be a string")
     }
-    const redirectUri = interpolateEnvVars(definition.oauth.redirectUri).trim()
+    const redirectUri = interpolateEnvVars(definition.oauth.redirectUri, runtimeEnv).trim()
     if (!redirectUri) {
       throw new Error("OAuth redirectUri must not be empty")
     }
@@ -203,7 +208,7 @@ export function extractOAuthConfig(definition: ServerEntry): McpOAuthConfig {
     if (typeof definition.oauth.clientName !== "string") {
       throw new Error("OAuth clientName must be a string")
     }
-    const clientName = interpolateEnvVars(definition.oauth.clientName).trim()
+    const clientName = interpolateEnvVars(definition.oauth.clientName, runtimeEnv).trim()
     if (!clientName) {
       throw new Error("OAuth clientName must not be empty")
     }
@@ -213,7 +218,7 @@ export function extractOAuthConfig(definition: ServerEntry): McpOAuthConfig {
     if (typeof definition.oauth.clientUri !== "string") {
       throw new Error("OAuth clientUri must be a string")
     }
-    const clientUri = interpolateEnvVars(definition.oauth.clientUri).trim()
+    const clientUri = interpolateEnvVars(definition.oauth.clientUri, runtimeEnv).trim()
     if (!clientUri) {
       throw new Error("OAuth clientUri must not be empty")
     }
@@ -223,7 +228,7 @@ export function extractOAuthConfig(definition: ServerEntry): McpOAuthConfig {
     if (typeof definition.oauth.logoUri !== "string") {
       throw new Error("OAuth logoUri must be a string")
     }
-    const logoUri = interpolateEnvVars(definition.oauth.logoUri).trim()
+    const logoUri = interpolateEnvVars(definition.oauth.logoUri, runtimeEnv).trim()
     if (!logoUri) {
       throw new Error("OAuth logoUri must not be empty")
     }
@@ -244,7 +249,7 @@ export function extractOAuthConfig(definition: ServerEntry): McpOAuthConfig {
     if (typeof definition.oauth.authServerMetadataUrl !== "string") {
       throw new Error("OAuth authServerMetadataUrl must be a string")
     }
-    const authServerMetadataUrl = interpolateEnvVars(definition.oauth.authServerMetadataUrl).trim()
+    const authServerMetadataUrl = interpolateEnvVars(definition.oauth.authServerMetadataUrl, runtimeEnv).trim()
     if (!authServerMetadataUrl) {
       throw new Error("OAuth authServerMetadataUrl must not be empty")
     }
@@ -268,12 +273,12 @@ export function extractOAuthConfig(definition: ServerEntry): McpOAuthConfig {
   return config
 }
 
-async function probeAuthDiscovery(serverUrl: string, definition?: ServerEntry, signal?: AbortSignal): Promise<AuthDiscovery> {
+async function probeAuthDiscovery(serverUrl: string, definition?: ServerEntry, signal?: AbortSignal, runtimeEnv: Readonly<NodeJS.ProcessEnv> = process.env): Promise<AuthDiscovery> {
   // Discovery must not execute config commands or send their source text.
   const discoveryHeaders = definition?.headers
     ? Object.fromEntries(Object.entries(definition.headers).filter(([, value]) => !value.startsWith("!") || value.startsWith("!!")))
     : undefined
-  const headers = new Headers(interpolateEnvRecord(discoveryHeaders))
+  const headers = new Headers(interpolateEnvRecord(discoveryHeaders, runtimeEnv))
   headers.set("content-type", "application/json")
 
   const controller = new AbortController()
@@ -370,7 +375,8 @@ export async function startAuth(
   if (isServerDisabled(definition)) throw new Error(`MCP server "${serverName}" is disabled`)
   const runtime = getRuntime(options)
   const runtimeState = getRuntimeState(runtime)
-  const config = definition ? extractOAuthConfig(definition) : {}
+  const runtimeEnv = options.runtimeEnv ?? process.env
+  const config = definition ? extractOAuthConfig(definition, runtimeEnv) : {}
   const authStorageOptions = options.authStorageOptions ?? {}
   const signal = combineAbortSignals(runtime.signal, options.signal)
   const generation = runtimeState.generation
@@ -388,9 +394,9 @@ export async function startAuth(
       onRedirect: async () => {
         throw new Error("Browser redirect is not used for client_credentials flow")
       },
-    }, authStorageOptions, runtime.signal)
+    }, authStorageOptions, runtime.signal, undefined, runtimeEnv)
     try {
-      const discovery = applyOAuthConfig(await probeAuthDiscovery(serverUrl, definition, signal), config)
+      const discovery = applyOAuthConfig(await probeAuthDiscovery(serverUrl, definition, signal, runtimeEnv), config)
       throwIfAborted(signal)
       const result = await abortable(runSdkAuth(authProvider, { serverUrl, ...discovery }), signal)
       throwIfAborted(signal)
@@ -439,7 +445,7 @@ export async function startAuth(
     onRedirect: async (url) => {
       capturedUrl = url
     },
-  }, authStorageOptions, runtime.signal, oauthState)
+  }, authStorageOptions, runtime.signal, oauthState, runtimeEnv)
 
   try {
     const storedAuth = await getAuthForUrl(serverName, serverUrl, authStorageOptions)
@@ -461,7 +467,7 @@ export async function startAuth(
 
     throwIfAborted(signal)
 
-    const discovery = applyOAuthConfig(await probeAuthDiscovery(serverUrl, definition, signal), config)
+    const discovery = applyOAuthConfig(await probeAuthDiscovery(serverUrl, definition, signal, runtimeEnv), config)
     throwIfAborted(signal)
     const result = await abortable(runSdkAuth(authProvider, { serverUrl, ...discovery }), signal)
     throwIfAborted(signal)
@@ -976,9 +982,11 @@ export async function getValidToken(
     console.log(`MCP Auth: Token expired for ${serverName}, attempting refresh`)
 
     try {
-      const authProvider = new McpOAuthProvider(serverName, serverUrl, {}, {
+      const runtimeEnv = options.runtimeEnv ?? process.env
+      const config = options.definition ? extractOAuthConfig(options.definition, runtimeEnv) : {}
+      const authProvider = new McpOAuthProvider(serverName, serverUrl, config, {
         onRedirect: async () => {},
-      }, authStorageOptions, runtime.signal)
+      }, authStorageOptions, runtime.signal, undefined, runtimeEnv)
 
       try {
         const clientInfo = await authProvider.clientInformation()
@@ -988,7 +996,10 @@ export async function getValidToken(
           return null
         }
 
-        const discovery = await probeAuthDiscovery(serverUrl, undefined, signal)
+        const discovery = applyOAuthConfig(
+          await probeAuthDiscovery(serverUrl, options.definition, signal, runtimeEnv),
+          config,
+        )
         throwIfAborted(signal)
         const result = await abortable(runSdkAuth(authProvider, {
           serverUrl,

@@ -77,6 +77,24 @@ describe("per-request HTTP header commands", () => {
     expect(forwarded?.headers.get("x-derived-actor")).toBe("actor-123");
   });
 
+  it("uses only the scoped runtime env for interpolation and child execution", async () => {
+    const script = commandScript(readEnvelope);
+    process.env.UNRELATED_PROCESS_SECRET = "must-not-be-inherited";
+    let forwarded: Request | undefined;
+    const fetch = createRequestHeadersCommandFetch({
+      command: "$env:RUNTIME_BIN",
+      args: [script],
+      env: { TEST_ACTOR: "${RUNTIME_ACTOR}" },
+    }, async (input, init) => { forwarded = new Request(input, init); return new Response("ok"); }, {
+      RUNTIME_BIN: process.execPath,
+      RUNTIME_ACTOR: "scoped-actor",
+    });
+    await fetch("https://mcp.example.test/mcp", { method: "POST", body: "scoped" });
+    expect(forwarded?.headers.get("x-derived-actor")).toBe("scoped-actor");
+    expect(forwarded?.headers.get("x-derived-body")).toBe("scoped");
+    delete process.env.UNRELATED_PROCESS_SECRET;
+  });
+
   it("runs for every request instead of caching derived headers", async () => {
     const script = commandScript(readEnvelope);
     const bodies: string[] = [];

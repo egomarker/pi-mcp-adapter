@@ -115,9 +115,10 @@ async function attemptDirectAutoAuth(
     return { status: "skipped" };
   }
 
+  const runtimeEnv = state.resolveRuntimeEnv?.(serverName);
   let serverUrl: string | undefined;
   try {
-    serverUrl = resolveServerUrl(definition);
+    serverUrl = resolveServerUrl(definition, runtimeEnv);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return { status: "failed", message: getDirectAuthFailedMessage(state, serverName, message) };
@@ -145,13 +146,14 @@ async function attemptDirectAutoAuth(
         serverUrl,
         definition,
         signal
-          ? { authStorageOptions: state.authStorageOptions, signal, runtime: state.oauthRuntime }
-          : { authStorageOptions: state.authStorageOptions, runtime: state.oauthRuntime },
+          ? { authStorageOptions: state.authStorageOptions, signal, runtime: state.oauthRuntime, ...(runtimeEnv ? { runtimeEnv } : {}) }
+          : { authStorageOptions: state.authStorageOptions, runtime: state.oauthRuntime, ...(runtimeEnv ? { runtimeEnv } : {}) },
       );
     } else {
       await authenticate(serverName, serverUrl, definition, {
         ...(signal ? { signal } : {}),
         runtime: state.oauthRuntime,
+        ...(runtimeEnv ? { runtimeEnv } : {}),
       });
     }
     return { status: "success" };

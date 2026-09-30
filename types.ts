@@ -622,6 +622,8 @@ export interface McpConfig {
 
 export interface McpAdapterOptions {
   config?: McpConfig;
+  /** Complete environment visible to one eligible server connection attempt. */
+  resolveRuntimeEnv?: (serverName: string) => Readonly<NodeJS.ProcessEnv>;
   configPath?: string;
 }
 

@@ -126,7 +126,8 @@ export async function initializeMcp(
 
   const ownsOAuthRuntime = options.oauthRuntime === undefined;
   const oauthRuntime = options.oauthRuntime ?? createOAuthRuntime(owner.signal);
-  const manager = new McpServerManager(cwd);
+  const resolveRuntimeEnv = options.resolveRuntimeEnv;
+  const manager = resolveRuntimeEnv ? new McpServerManager(cwd, resolveRuntimeEnv) : new McpServerManager(cwd);
   manager.setRuntimeSignal?.(owner.signal);
   manager.setOAuthRuntime?.(oauthRuntime);
   manager.setDefaultRequestTimeoutMs(config.settings?.requestTimeoutMs);
@@ -172,6 +173,7 @@ export async function initializeMcp(
     promptMetadataLive,
     serverInstructions,
     config,
+    ...(resolveRuntimeEnv ? { resolveRuntimeEnv } : {}),
     programmaticConfig: options.config !== undefined,
     oauthRuntime,
     authStorageOptions,
@@ -242,15 +244,17 @@ export async function initializeMcp(
 
   const cachePath = getMetadataCachePath();
   const cacheFileExists = existsSync(cachePath);
-  let cache = loadMetadataCache();
+  let cache = resolveRuntimeEnv ? null : loadMetadataCache();
   let bootstrapAll = false;
 
-  if (!cacheFileExists) {
-    bootstrapAll = true;
-    saveMetadataCache({ version: 1, servers: {} });
-  } else if (!cache) {
-    cache = { version: 1, servers: {} };
-    saveMetadataCache(cache);
+  if (!resolveRuntimeEnv) {
+    if (!cacheFileExists) {
+      bootstrapAll = true;
+      saveMetadataCache({ version: 1, servers: {} });
+    } else if (!cache) {
+      cache = { version: 1, servers: {} };
+      saveMetadataCache(cache);
+    }
   }
 
   const prefix = config.settings?.toolPrefix ?? "server";
@@ -403,7 +407,7 @@ export async function initializeMcp(
 
   const envDirect = process.env.MCP_DIRECT_TOOLS;
   if (envDirect !== "__none__") {
-    const currentCache = loadMetadataCache();
+    const currentCache = resolveRuntimeEnv ? null : loadMetadataCache();
     const envDirectToolOverride = envDirect?.split(",").map(selector => selector.trim()).filter(Boolean);
     const missingCacheServers = getMissingConfiguredDirectToolServers(config, currentCache, envDirectToolOverride);
 
@@ -540,7 +544,7 @@ export function updateMetadataCache(
   const definition = state.config.mcpServers[serverName];
   if (!definition || isServerDisabled(definition)) return;
 
-  const configHash = computeServerHash(definition);
+  const configHash = computeServerHash(definition, connection.runtimeEnv);
   const existing = loadMetadataCache();
   const existingEntry = existing?.servers?.[serverName];
 

@@ -259,6 +259,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
   private lastObservedClientId: string | undefined
   private lastSavedAccessToken: string | undefined
   private pendingAuthAccessToken: string | undefined
+  private readonly runtimeEnv: Readonly<NodeJS.ProcessEnv>
 
   constructor(
     private serverName: string,
@@ -268,7 +269,9 @@ export class McpOAuthProvider implements OAuthClientProvider {
     private storageOptions: AuthStorageOptions = {},
     private runtimeSignal?: AbortSignal,
     initialState?: string,
+    runtimeEnv: Readonly<NodeJS.ProcessEnv> = process.env,
   ) {
+    this.runtimeEnv = { ...runtimeEnv }
     this.flowState = initialState
     this.redirectUrlSnapshot = config.grantType === "client_credentials"
       ? undefined
@@ -392,6 +395,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
         ? resolveCommandSecret(
           this.config.clientSecret,
           `MCP server "${this.serverName}" OAuth clientSecret`,
+          this.runtimeEnv,
         )
         : this.config.clientSecret
       return {

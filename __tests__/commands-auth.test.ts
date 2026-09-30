@@ -300,6 +300,19 @@ describe("authenticateServer", () => {
     expect(result.message).not.toContain("example.test");
   });
 
+  it("does not resolve scoped secrets for bearer status inspection", async () => {
+    process.env.PI_MCP_ADAPTER_TEST_AUTH_STORE = "memory";
+    const resolver = vi.fn(() => ({ SECRET_URL: "https://secret.example/mcp" }));
+    const ui = { notify: vi.fn() };
+    const { manageBearerToken } = await import("../commands.ts");
+    const result = await manageBearerToken("status", "remote", {
+      config: { mcpServers: { remote: { url: "${SECRET_URL}", auth: "bearer", bearerTokenStore: true } } },
+      resolveRuntimeEnv: resolver,
+    } as any, { hasUI: true, mode: "tui", ui } as any);
+    expect(result.ok).toBe(false);
+    expect(resolver).not.toHaveBeenCalled();
+  });
+
   it("reports stored bearer token status without exposing the token", async () => {
     process.env.PI_MCP_ADAPTER_TEST_AUTH_STORE = "memory";
     const { resetTestBearerTokenStore, saveBearerTokenForUrl } = await import("../mcp-bearer-store.ts");

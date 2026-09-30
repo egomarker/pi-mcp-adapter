@@ -119,16 +119,17 @@ const COMMAND_SECRET_TIMEOUT_MS = 10_000;
 const COMMAND_SECRET_MAX_OUTPUT_BYTES = 1024 * 1024;
 
 /** Resolve a secret value, executing only a single leading `!` command marker. */
-export function resolveCommandSecret(value: string, context: string): string;
-export function resolveCommandSecret(value: undefined, context: string): undefined;
-export function resolveCommandSecret(value: string | undefined, context: string): string | undefined;
-export function resolveCommandSecret(value: string | undefined, context: string): string | undefined {
+export function resolveCommandSecret(value: string, context: string, environment?: NodeJS.ProcessEnv): string;
+export function resolveCommandSecret(value: undefined, context: string, environment?: NodeJS.ProcessEnv): undefined;
+export function resolveCommandSecret(value: string | undefined, context: string, environment?: NodeJS.ProcessEnv): string | undefined;
+export function resolveCommandSecret(value: string | undefined, context: string, environment: NodeJS.ProcessEnv = process.env): string | undefined {
   if (value === undefined) return undefined;
-  if (value.startsWith("!!")) return interpolateEnvVars(value.slice(1));
-  if (!value.startsWith("!")) return interpolateEnvVars(value);
+  if (value.startsWith("!!")) return interpolateEnvVars(value.slice(1), environment);
+  if (!value.startsWith("!")) return interpolateEnvVars(value, environment);
 
   const result = spawnSync(value.slice(1), {
     shell: true,
+    env: { ...environment },
     encoding: "utf8",
     timeout: COMMAND_SECRET_TIMEOUT_MS,
     maxBuffer: COMMAND_SECRET_MAX_OUTPUT_BYTES,
@@ -157,12 +158,13 @@ export function resolveCommandSecret(value: string | undefined, context: string)
 export function resolveCommandSecretsRecord(
   values: Record<string, string> | undefined,
   context: (key: string) => string,
+  environment: NodeJS.ProcessEnv = process.env,
 ): Record<string, string> | undefined {
   if (!values) return undefined;
 
   return Object.fromEntries(Object.entries(values).map(([key, value]) => [
     key,
-    resolveCommandSecret(value, context(key)),
+    resolveCommandSecret(value, context(key), environment),
   ]));
 }
 
@@ -181,7 +183,7 @@ export function resolveServerUrl(definition: Pick<ServerEntry, "url">, environme
   try {
     new URL(resolved);
   } catch (error) {
-    throw new Error(`Invalid MCP server URL after environment interpolation: ${resolved}`, { cause: error });
+    throw new Error("Invalid MCP server URL after environment interpolation");
   }
   return resolved;
 }
@@ -190,9 +192,13 @@ export function resolveConfigPath(value: string | undefined, environment: NodeJS
   if (value === undefined) return undefined;
 
   const resolved = interpolateEnvVars(value, environment);
-  if (resolved === "~") return homedir();
+  if ((resolved === "~" || resolved.startsWith("~/") || resolved.startsWith("~\\")) && environment !== process.env && !environment.HOME) {
+    throw new Error("MCP scoped environment requires HOME to expand ~ paths");
+  }
+  const home = environment.HOME || homedir();
+  if (resolved === "~") return home;
   if (resolved.startsWith("~/") || resolved.startsWith("~\\")) {
-    return join(homedir(), resolved.slice(2));
+    return join(home, resolved.slice(2));
   }
   return resolved;
 }

@@ -288,6 +288,35 @@ describe("McpServerManager HTTP bearer auth", () => {
     expect(mocks.httpTransports).toHaveLength(0);
   });
 
+  it("does not resolve runtime secrets for malformed transport definitions", async () => {
+    const { McpServerManager } = await import("../server-manager.ts");
+    const resolver = vi.fn(() => ({ SECRET: "unused" }));
+    const manager = new McpServerManager(undefined, resolver);
+    await expect(manager.connect("broken", { url: "https://example.test/mcp", command: "node" })).rejects.toThrow("exactly one");
+    expect(resolver).not.toHaveBeenCalled();
+  });
+
+  it("uses only the server-scoped runtime env for URL, headers, and bearer auth", async () => {
+    const { McpServerManager } = await import("../server-manager.ts");
+    process.env.UNRELATED_PROCESS_SECRET = "must-not-be-used";
+    const calls: string[] = [];
+    const manager = new McpServerManager(undefined, (serverName) => {
+      calls.push(serverName);
+      return serverName === "one"
+        ? { MCP_URL: "https://one.example.test/mcp", MCP_TOKEN: "one-token", MCP_HEADER: "one-header" }
+        : { MCP_URL: "https://two.example.test/mcp", MCP_TOKEN: "two-token", MCP_HEADER: "two-header" };
+    });
+    await manager.connect("one", { url: "${MCP_URL}", auth: "bearer", bearerTokenEnv: "MCP_TOKEN", headers: { "x-scope": "{env:MCP_HEADER}" } });
+    await manager.connect("two", { url: "${MCP_URL}", auth: "bearer", bearerTokenEnv: "MCP_TOKEN", headers: { "x-scope": "{env:MCP_HEADER}" } });
+    expect(calls).toEqual(["one", "two"]);
+    const one=mocks.httpTransports.find(entry=>entry.url.href==="https://one.example.test/mcp");
+    const two=mocks.httpTransports.find(entry=>entry.url.href==="https://two.example.test/mcp");
+    expect(one?.options.requestInit?.headers).toMatchObject({ Authorization: "Bearer one-token", "x-scope": "one-header" });
+    expect(two?.options.requestInit?.headers).toMatchObject({ Authorization: "Bearer two-token", "x-scope": "two-header" });
+    expect(JSON.stringify(mocks.httpTransports.map(entry => entry.options))).not.toContain("must-not-be-used");
+    delete process.env.UNRELATED_PROCESS_SECRET;
+  });
+
   it("uses configured headers without implicit OAuth", async () => {
     const { McpServerManager } = await import("../server-manager.ts");
 

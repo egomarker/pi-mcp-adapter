@@ -1,5 +1,6 @@
 // npx-resolver.ts - Resolve npx/npm exec binaries to avoid npm parent processes
 import { existsSync, readFileSync, realpathSync, readdirSync, statSync, writeFileSync, renameSync, mkdirSync, openSync, readSync, closeSync, unlinkSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join, dirname, extname, resolve, sep } from "node:path";
 import { getAgentPath } from "./agent-dir.ts";
 import { throwIfAborted } from "./abort.ts";
@@ -42,6 +43,7 @@ export async function resolveNpxBinary(
   command: string,
   args: string[],
   signal?: AbortSignal,
+  runtimeEnv?: Readonly<NodeJS.ProcessEnv>,
 ): Promise<NpxResolution | null> {
   throwIfAborted(signal);
   const parsed = command === "npx"
@@ -53,7 +55,9 @@ export async function resolveNpxBinary(
   if (!parsed) return null;
 
   const packageSpec = parsePackageSpec(parsed.packageSpec);
-  const cacheKey = JSON.stringify([command, parsed.packageSpec, parsed.binName ?? ""]);
+  const cacheKey = JSON.stringify(runtimeEnv
+    ? [command, parsed.packageSpec, parsed.binName ?? "", createHash("sha256").update(JSON.stringify(Object.entries(runtimeEnv).sort(([a], [b]) => a.localeCompare(b)))).digest("hex")]
+    : [command, parsed.packageSpec, parsed.binName ?? ""]);
   const cache = loadCache();
   const cached = cache?.entries?.[cacheKey];
 
@@ -66,15 +70,15 @@ export async function resolveNpxBinary(
     return { binPath: cached.resolvedBin, extraArgs: parsed.extraArgs, isJs: cached.isJs };
   }
 
-  const resolved = resolveFromNpmCache(parsed.packageSpec, parsed.binName);
+  const resolved = resolveFromNpmCache(parsed.packageSpec, parsed.binName, runtimeEnv);
   if (resolved) {
     saveCacheEntry(cacheKey, resolved);
     return { binPath: resolved.resolvedBin, extraArgs: parsed.extraArgs, isJs: resolved.isJs };
   }
 
   // Slow path: force npx cache population
-  await forceNpxCache(parsed.packageSpec, signal);
-  const resolvedAfterInstall = resolveFromNpmCache(parsed.packageSpec, parsed.binName);
+  await forceNpxCache(parsed.packageSpec, signal, runtimeEnv);
+  const resolvedAfterInstall = resolveFromNpmCache(parsed.packageSpec, parsed.binName, runtimeEnv);
   if (resolvedAfterInstall) {
     saveCacheEntry(cacheKey, resolvedAfterInstall);
     return { binPath: resolvedAfterInstall.resolvedBin, extraArgs: parsed.extraArgs, isJs: resolvedAfterInstall.isJs };
@@ -176,8 +180,8 @@ function parseNpmExecArgs(args: string[]): ParsedInvocation | null {
   return { packageSpec, binName, extraArgs };
 }
 
-function resolveFromNpmCache(packageSpec: string, binName?: string): NpxCacheEntry | null {
-  const cacheDir = getNpmCacheDir();
+function resolveFromNpmCache(packageSpec: string, binName?: string, runtimeEnv?: Readonly<NodeJS.ProcessEnv>): NpxCacheEntry | null {
+  const cacheDir = getNpmCacheDir(runtimeEnv);
   if (!cacheDir) return null;
 
   const parsedSpec = parsePackageSpec(packageSpec);
@@ -248,14 +252,14 @@ function resolveFromNpmCache(packageSpec: string, binName?: string): NpxCacheEnt
 
 const FORCE_CACHE_TIMEOUT_MS = 30_000;
 
-async function forceNpxCache(packageSpec: string, signal?: AbortSignal): Promise<void> {
+async function forceNpxCache(packageSpec: string, signal?: AbortSignal, runtimeEnv?: Readonly<NodeJS.ProcessEnv>): Promise<void> {
   throwIfAborted(signal);
   try {
     await new Promise<void>((resolve, reject) => {
       const proc = crossSpawn(
         "npm",
         ["exec", "--yes", "--package", packageSpec, "--", "node", "-e", "1"],
-        { stdio: "ignore" }
+        { stdio: "ignore", ...(runtimeEnv ? { env: { ...runtimeEnv } } : {}) }
       );
       const timer = setTimeout(() => {
         proc.kill();
@@ -407,26 +411,15 @@ function detectJsBinary(binPath: string): boolean {
   }
 }
 
-let npmCacheDirCached: string | null | undefined;
-
-function getNpmCacheDir(): string | null {
-  if (npmCacheDirCached !== undefined) return npmCacheDirCached;
-  if (process.env.NPM_CONFIG_CACHE) {
-    npmCacheDirCached = process.env.NPM_CONFIG_CACHE;
-    return npmCacheDirCached;
-  }
+function getNpmCacheDir(runtimeEnv?: Readonly<NodeJS.ProcessEnv>): string | null {
+  const environment = runtimeEnv ?? process.env;
+  if (environment.NPM_CONFIG_CACHE) return environment.NPM_CONFIG_CACHE;
   try {
-    const result = crossSpawn.sync("npm", ["config", "get", "cache"], { encoding: "utf-8" });
-    if (result.status === 0) {
-      const path = String(result.stdout).trim();
-      npmCacheDirCached = path || null;
-      return npmCacheDirCached;
-    }
+    const result = crossSpawn.sync("npm", ["config", "get", "cache"], { encoding: "utf-8", ...(runtimeEnv ? { env: { ...runtimeEnv } } : {}) });
+    if (result.status === 0) return String(result.stdout).trim() || null;
   } catch {
-    npmCacheDirCached = null;
     return null;
   }
-  npmCacheDirCached = null;
   return null;
 }
 
