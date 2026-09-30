@@ -68,6 +68,15 @@ describe("initializeMcp elicitation config", () => {
     expect(state.programmaticConfig).toBe(true);
   });
 
+  it("passes a scoped runtime-env resolver to the manager and state", async () => {
+    const { initializeMcp } = await import("../init.ts");
+    const { McpServerManager } = await import("../server-manager.ts");
+    const resolver = vi.fn((serverName: string) => ({ SERVER: serverName }));
+    const state = await initializeMcp(extensionApi(), context({ hasUI: false }), undefined, { resolveRuntimeEnv: resolver });
+    expect(McpServerManager).toHaveBeenLastCalledWith("/tmp/project", resolver);
+    expect(state.resolveRuntimeEnv?.("alpha")).toEqual({ SERVER: "alpha" });
+  });
+
   it("enables form and URL elicitation in TUI mode", async () => {
     const { initializeMcp } = await import("../init.ts");
     const { McpServerManager } = await import("../server-manager.ts");

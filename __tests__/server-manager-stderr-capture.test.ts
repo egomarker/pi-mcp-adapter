@@ -122,6 +122,7 @@ describe("McpServerManager stderr capture", () => {
       "npx",
       ["-y", "demo-pkg", "--token=interpolated"],
       expect.any(AbortSignal),
+      expect.any(Object),
     );
     expect(mocks.transports[0].options).toMatchObject({
       command: "npx",

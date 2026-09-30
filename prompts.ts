@@ -16,8 +16,7 @@ import { truncateAtWord } from "./utils.ts";
  * time. Mirrors `resolveDirectTools`: reads the persistent metadata cache so
  * commands are available before any server connects.
  */
-export function resolveCachedPrompts(config: McpConfig): PromptMetadata[] {
-  const cache = loadMetadataCache();
+export function resolveCachedPrompts(config: McpConfig, cache: ReturnType<typeof loadMetadataCache> = loadMetadataCache()): PromptMetadata[] {
   if (!cache?.servers) return [];
 
   const prefix = config.settings?.toolPrefix ?? "server";

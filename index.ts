@@ -9,7 +9,7 @@ import { cloneMcpConfig, loadMcpConfig, writeProjectServerDisabledOverride } fro
 import { buildProxyDescription, createDirectToolExecutor, getMissingConfiguredDirectToolServers, prepareDirectToolArguments, resolveDirectTools } from "./direct-tools.ts";
 import { flushMetadataCache, initializeMcp, updateStatusBar } from "./init.ts";
 import { isServerInActiveFailureBackoff } from "./failure-backoff.ts";
-import { loadMetadataCache, parseDirectToolSelectors, type MetadataCache } from "./metadata-cache.ts";
+import { bindServerCacheEnvironment, loadMetadataCache, parseDirectToolSelectors, type MetadataCache } from "./metadata-cache.ts";
 import { createPromptCommand, resolveCachedPrompts } from "./prompts.ts";
 import { logger } from "./logger.ts";
 import { executeAuthComplete, executeAuthStart, executeCall, executeConnect, executeDescribe, executeInstructions, executeList, executeSearch, executeStatus, executeUiMessages } from "./proxy-modes.ts";
@@ -219,7 +219,10 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
   const earlyConfig = programmaticConfig
     ? cloneMcpConfig(sessionConfig)
     : loadMcpConfig(earlyConfigPath);
-  const earlyCache = loadMetadataCache();
+  // A scoped host has no eligible connection (and therefore no env snapshot)
+  // during extension loading. Fail closed instead of validating cache entries
+  // against ambient process.env.
+  const earlyCache = options.resolveRuntimeEnv ? null : loadMetadataCache();
   const envRaw = process.env.MCP_DIRECT_TOOLS;
   const envDirectToolOverride = parseEnvDirectToolOverride(envRaw);
   const namespaceEnvOverride = resolveNamespaceEnvOverride(envRaw, envDirectToolOverride);
@@ -376,9 +379,23 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
     }
   }
 
+  function loadToolSurfaceCache(): MetadataCache | null {
+    const cache = loadMetadataCache();
+    if (!cache || !state) return options.resolveRuntimeEnv ? null : cache;
+    if (!state.resolveRuntimeEnv) return cache;
+    const servers: MetadataCache["servers"] = {};
+    for (const [serverName, connection] of state.manager.getAllConnections()) {
+      const entry = cache.servers?.[serverName];
+      if (!entry || connection.status !== "connected") continue;
+      bindServerCacheEnvironment(entry, connection.runtimeEnv);
+      servers[serverName] = entry;
+    }
+    return { ...cache, servers };
+  }
+
   function syncToolSurface(ctx?: ExtensionContext): void {
     const config = state?.config ?? earlyConfig;
-    const cache = loadMetadataCache();
+    const cache = loadToolSurfaceCache();
     const result = syncDirectTools(config, cache);
     syncProxyTool(config, cache, result.specs);
     syncNamespaceTools(config, cache, result.reservedDirectNames, result.activeDirectNames);
@@ -434,7 +451,7 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
     registerPromptCommands([...(state?.promptMetadata?.values() ?? [])].flat());
   }
 
-  registerPromptCommands(resolveCachedPrompts(earlyConfig));
+  registerPromptCommands(resolveCachedPrompts(earlyConfig, earlyCache));
 
   const registerRuntimeServer = (name: string, definition: ServerEntry): McpServerRegistration => {
     if (typeof name !== "string" || name.trim() === "") {
@@ -549,6 +566,7 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
           }
         : {}),
       oauthRuntime,
+      ...(options.resolveRuntimeEnv !== undefined ? { resolveRuntimeEnv: options.resolveRuntimeEnv } : {}),
     });
     initPromise = promise;
 
@@ -671,7 +689,7 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
     if (envRaw !== undefined && envRaw !== "__none__") {
       const missingEnvDirectTools = getMissingConfiguredDirectToolServers(
         earlyConfig,
-        loadMetadataCache(),
+        loadToolSurfaceCache(),
         envDirectToolOverride,
       );
       if (missingEnvDirectTools.length > 0) {
@@ -960,7 +978,10 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
         return;
       }
 
-      const result = await authenticateServer(serverName, state.config, commandCtx, commandCtx.signal, state.oauthRuntime);
+      const runtimeEnv = state.resolveRuntimeEnv?.(serverName);
+      const result = runtimeEnv
+        ? await authenticateServer(serverName, state.config, commandCtx, commandCtx.signal, state.oauthRuntime, runtimeEnv)
+        : await authenticateServer(serverName, state.config, commandCtx, commandCtx.signal, state.oauthRuntime);
       if (result.ok) {
         commandOwner?.throwIfInactive();
         await reconnectServer(state, commandCtx, serverName);
@@ -1238,6 +1259,7 @@ export function createMcpAdapter(options: McpAdapterOptions = {}) {
     installMcpAdapter(pi, {
       ...(options.configPath !== undefined ? { configPath: options.configPath } : {}),
       ...(factoryConfig !== undefined ? { config: cloneMcpConfig(factoryConfig) } : {}),
+      ...(options.resolveRuntimeEnv !== undefined ? { resolveRuntimeEnv: options.resolveRuntimeEnv } : {}),
     });
   };
 }

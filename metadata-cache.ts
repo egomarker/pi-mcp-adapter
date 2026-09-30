@@ -32,6 +32,7 @@ import {
 import { extractUiToolVisibility, isUiToolVisibleToModel } from "./ui-tool-visibility.ts";
 
 const CACHE_VERSION = 1;
+const cacheEntryEnvironments = new WeakMap<ServerCacheEntry, Readonly<NodeJS.ProcessEnv>>();
 const CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 export type { CachedPrompt, CachedResource, CachedTool, MetadataCache, ServerCacheEntry } from "./types.ts";
@@ -111,15 +112,20 @@ export function computeServerHash(definition: ServerEntry, environment: NodeJS.P
   return createHash("sha256").update(normalized).digest("hex");
 }
 
+export function bindServerCacheEnvironment(entry: ServerCacheEntry, environment: Readonly<NodeJS.ProcessEnv>): void {
+  cacheEntryEnvironments.set(entry, { ...environment });
+}
+
 export function isServerCacheValid(
   entry: ServerCacheEntry,
   definition: ServerEntry,
   maxAgeMs: number = CACHE_MAX_AGE_MS,
-  environment: NodeJS.ProcessEnv = process.env,
+  environment?: NodeJS.ProcessEnv,
 ): boolean {
+  const effectiveEnvironment = environment ?? cacheEntryEnvironments.get(entry) ?? process.env;
   let configHash: string;
   try {
-    configHash = computeServerHash(definition, environment);
+    configHash = computeServerHash(definition, effectiveEnvironment);
   } catch {
     return false;
   }

@@ -458,6 +458,26 @@ describe("McpOAuthProvider discovery state", () => {
     });
   });
 
+  it("resolves OAuth command secrets with only the scoped runtime env", async () => {
+    process.env.UNRELATED_PROCESS_SECRET = "ambient";
+    const expression = `!${JSON.stringify(process.execPath)} -e "process.stdout.write((process.env.SCOPED||'')+'|'+String(process.env.UNRELATED_PROCESS_SECRET))"`;
+    const provider = new McpOAuthProvider(
+      "scoped-command-secret",
+      serverUrl,
+      { clientId: "config-client", clientSecret: expression },
+      { onRedirect: async () => {} },
+      {},
+      undefined,
+      undefined,
+      { SCOPED: "visible" },
+    );
+    expect(await provider.clientInformation()).toMatchObject({
+      client_id: "config-client",
+      client_secret: "visible|undefined",
+    });
+    delete process.env.UNRELATED_PROCESS_SECRET;
+  });
+
   it("fails closed when a pre-registered client issuer changes", async () => {
     saveAuthEntry("pre-registered-issuer-change", {
       clientInfo: {

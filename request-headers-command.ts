@@ -145,7 +145,7 @@ type CommandResult =
   | { status: "error"; error: Error }
   | { status: "success"; headers: Headers };
 
-function resolvedCommand(config: HttpRequestHeadersCommand): {
+function resolvedCommand(config: HttpRequestHeadersCommand, runtimeEnv: Readonly<NodeJS.ProcessEnv> = process.env): {
   command: string;
   args: string[];
   env: NodeJS.ProcessEnv;
@@ -172,12 +172,12 @@ function resolvedCommand(config: HttpRequestHeadersCommand): {
     throw new Error("HTTP request headers command timeoutMs must be an integer between 1 and 60000");
   }
   return {
-    command: interpolateEnvVars(config.command),
-    args: (config.args ?? []).map(interpolateEnvVars),
+    command: interpolateEnvVars(config.command, runtimeEnv),
+    args: (config.args ?? []).map(value => interpolateEnvVars(value, runtimeEnv)),
     env: {
-      ...process.env,
+      ...runtimeEnv,
       ...Object.fromEntries(
-        Object.entries(config.env ?? {}).map(([key, value]) => [key, interpolateEnvVars(value)]),
+        Object.entries(config.env ?? {}).map(([key, value]) => [key, interpolateEnvVars(value, runtimeEnv)]),
       ),
     },
     timeoutMs,
@@ -188,8 +188,9 @@ async function invokeRequestHeadersCommand(
   config: HttpRequestHeadersCommand,
   envelope: HttpRequestCommandEnvelope,
   signal: AbortSignal,
+  runtimeEnv: Readonly<NodeJS.ProcessEnv>,
 ): Promise<Headers> {
-  const resolved = resolvedCommand(config);
+  const resolved = resolvedCommand(config, runtimeEnv);
   if (USE_PROCESS_GROUP) assertPosixProcessDiscoveryAvailable();
   return new Promise<Headers>((resolve, reject) => {
     let stdout = Buffer.alloc(0);
@@ -298,9 +299,10 @@ async function invokeRequestHeadersCommand(
 export function createRequestHeadersCommandFetch(
   config: HttpRequestHeadersCommand,
   delegate: FetchLike = globalThis.fetch,
+  runtimeEnv: Readonly<NodeJS.ProcessEnv> = process.env,
 ): FetchLike {
   // Validate static configuration before the first request.
-  resolvedCommand(config);
+  resolvedCommand(config, runtimeEnv);
   return async (input: URL | RequestInfo, init?: RequestInit): Promise<Response> => {
     const request = new Request(input, init);
     const body = Buffer.from(await request.clone().arrayBuffer());
@@ -309,7 +311,7 @@ export function createRequestHeadersCommandFetch(
       method: request.method.toUpperCase(),
       url: request.url,
       bodyBase64: body.toString("base64"),
-    }, request.signal);
+    }, request.signal, runtimeEnv);
     const headers = new Headers(request.headers);
     derived.forEach((value, name) => headers.set(name, value));
     return delegate(new URL(request.url), {

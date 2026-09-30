@@ -66,6 +66,27 @@ describe("OpenCode environment interpolation", () => {
       .toThrow(/^Failed to resolve test secret: command returned empty output$/);
   });
 
+  it("runs command secrets and tilde expansion with only the scoped environment", () => {
+    process.env.UNRELATED_PROCESS_SECRET = "ambient";
+    const runtimeEnv = { SCOPED: "visible", HOME: "/scoped/home" };
+    const expression = `!${JSON.stringify(process.execPath)} -e "process.stdout.write((process.env.SCOPED||'')+'|'+String(process.env.UNRELATED_PROCESS_SECRET))"`;
+    expect(resolveCommandSecret(expression, "scoped command", runtimeEnv)).toBe("visible|undefined");
+    expect(resolveConfigPath("~/server", runtimeEnv)).toBe("/scoped/home/server");
+    expect(() => resolveConfigPath("~/server", { SCOPED: "visible" })).toThrow("requires HOME");
+    delete process.env.UNRELATED_PROCESS_SECRET;
+  });
+
+  it("redacts interpolated URL values from validation errors", () => {
+    const secretUrl = "not a url with secret-value";
+    expect(() => resolveServerUrl({ url: "${SECRET_URL}" }, { SECRET_URL: secretUrl })).toThrow(
+      "Invalid MCP server URL after environment interpolation",
+    );
+    try { resolveServerUrl({ url: "${SECRET_URL}" }, { SECRET_URL: secretUrl }); } catch (error) {
+      expect(String(error)).not.toContain("secret-value");
+      expect((error as Error).cause).toBeUndefined();
+    }
+  });
+
   it("rejects invalid OAuth fields before interpolation", () => {
     expect(() => extractOAuthConfig({
       url: "https://example.test/mcp",

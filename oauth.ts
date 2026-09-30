@@ -1,4 +1,5 @@
 import { getValidToken } from "./mcp-auth-flow.ts";
+import type { ServerEntry } from "./types.ts";
 import {
   inspectAuthForUrl,
   updateTokens,
@@ -10,6 +11,8 @@ export type McpOAuthTokens = StoredTokens;
 export type McpOAuthStorageOptions = AuthStorageOptions;
 export interface McpOAuthTokenOptions {
   authStorageOptions?: McpOAuthStorageOptions;
+  definition?: ServerEntry;
+  runtimeEnv?: Readonly<NodeJS.ProcessEnv>;
   signal?: AbortSignal;
   skipIssuerMetadataValidation?: boolean;
 }

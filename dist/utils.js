@@ -98,15 +98,16 @@ export function interpolateEnvRecord(values, environment = process.env) {
 }
 const COMMAND_SECRET_TIMEOUT_MS = 10_000;
 const COMMAND_SECRET_MAX_OUTPUT_BYTES = 1024 * 1024;
-export function resolveCommandSecret(value, context) {
+export function resolveCommandSecret(value, context, environment = process.env) {
     if (value === undefined)
         return undefined;
     if (value.startsWith("!!"))
-        return interpolateEnvVars(value.slice(1));
+        return interpolateEnvVars(value.slice(1), environment);
     if (!value.startsWith("!"))
-        return interpolateEnvVars(value);
+        return interpolateEnvVars(value, environment);
     const result = spawnSync(value.slice(1), {
         shell: true,
+        env: { ...environment },
         encoding: "utf8",
         timeout: COMMAND_SECRET_TIMEOUT_MS,
         maxBuffer: COMMAND_SECRET_MAX_OUTPUT_BYTES,
@@ -131,12 +132,12 @@ export function resolveCommandSecret(value, context) {
     return resolved;
 }
 /** Resolve command markers in a configured record without mutating the input. */
-export function resolveCommandSecretsRecord(values, context) {
+export function resolveCommandSecretsRecord(values, context, environment = process.env) {
     if (!values)
         return undefined;
     return Object.fromEntries(Object.entries(values).map(([key, value]) => [
         key,
-        resolveCommandSecret(value, context(key)),
+        resolveCommandSecret(value, context(key), environment),
     ]));
 }
 export function resolveServerUrl(definition, environment = process.env) {
@@ -154,7 +155,7 @@ export function resolveServerUrl(definition, environment = process.env) {
         new URL(resolved);
     }
     catch (error) {
-        throw new Error(`Invalid MCP server URL after environment interpolation: ${resolved}`, { cause: error });
+        throw new Error("Invalid MCP server URL after environment interpolation");
     }
     return resolved;
 }
@@ -162,10 +163,14 @@ export function resolveConfigPath(value, environment = process.env) {
     if (value === undefined)
         return undefined;
     const resolved = interpolateEnvVars(value, environment);
+    if ((resolved === "~" || resolved.startsWith("~/") || resolved.startsWith("~\\")) && environment !== process.env && !environment.HOME) {
+        throw new Error("MCP scoped environment requires HOME to expand ~ paths");
+    }
+    const home = environment.HOME || homedir();
     if (resolved === "~")
-        return homedir();
+        return home;
     if (resolved.startsWith("~/") || resolved.startsWith("~\\")) {
-        return join(homedir(), resolved.slice(2));
+        return join(home, resolved.slice(2));
     }
     return resolved;
 }

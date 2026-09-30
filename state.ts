@@ -39,6 +39,7 @@ export interface McpExtensionState {
   promptMetadataLive: Set<string>;
   serverInstructions: Map<string, string>;
   config: McpConfig;
+  resolveRuntimeEnv?: (serverName: string) => Readonly<NodeJS.ProcessEnv>;
   programmaticConfig?: boolean;
   oauthRuntime: McpOAuthRuntime;
   authStorageOptions: AuthStorageOptions;

@@ -9,6 +9,7 @@ import { resourceNameToToolName } from "./resource-tools.js";
 import { extractToolUiStreamMode, interpolateEnvRecord, interpolateEnvVars, resolveBearerToken, resolveConfigPath, resolveServerUrl, } from "./utils.js";
 import { extractUiToolVisibility, isUiToolVisibleToModel } from "./ui-tool-visibility.js";
 const CACHE_VERSION = 1;
+const cacheEntryEnvironments = new WeakMap();
 const CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 export function getMetadataCachePath() {
     return getAgentPath("mcp-cache.json");
@@ -84,10 +85,14 @@ export function computeServerHash(definition, environment = process.env) {
     const normalized = stableStringify(identity);
     return createHash("sha256").update(normalized).digest("hex");
 }
-export function isServerCacheValid(entry, definition, maxAgeMs = CACHE_MAX_AGE_MS, environment = process.env) {
+export function bindServerCacheEnvironment(entry, environment) {
+    cacheEntryEnvironments.set(entry, { ...environment });
+}
+export function isServerCacheValid(entry, definition, maxAgeMs = CACHE_MAX_AGE_MS, environment) {
+    const effectiveEnvironment = environment ?? cacheEntryEnvironments.get(entry) ?? process.env;
     let configHash;
     try {
-        configHash = computeServerHash(definition, environment);
+        configHash = computeServerHash(definition, effectiveEnvironment);
     }
     catch {
         return false;

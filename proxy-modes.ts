@@ -14,7 +14,7 @@ import { resolveMcpResultContent, transformMcpContent, transformMcpResourceConte
 import { guardMcpOutput, guardedMcpDetails, resolveMcpOutputGuardOptions } from "./mcp-output-guard.ts";
 import { maybeStartUiSession, summarizeUiSessionResult, type UiSessionRuntime } from "./ui-session.ts";
 import { formatAuthRequiredMessage, formatMcpStatus, normalizeToolArguments, resolveServerUrl, truncateAtWord } from "./utils.ts";
-import { authenticate, completeAuthFromInput, startAuth, supportsOAuth } from "./mcp-auth-flow.ts";
+import { authenticate, completeAuthFromInput, getPendingAuthorizationUrl, startAuth, supportsOAuth } from "./mcp-auth-flow.ts";
 import { SessionRecoveryAuthRequiredError, withSessionRecovery } from "./session-recovery.ts";
 import { paginate, rankSuggestions, rankToolMatches, resolveSearchKeywords } from "./search-ranking.ts";
 import { ensureToolCallApproved, isToolCallApprovalRequired } from "./tool-approval.ts";
@@ -200,9 +200,10 @@ async function attemptAutoAuth(
     return { status: "skipped" };
   }
 
+  const runtimeEnv = state.resolveRuntimeEnv?.(serverName);
   let serverUrl: string | undefined;
   try {
-    serverUrl = resolveServerUrl(definition);
+    serverUrl = resolveServerUrl(definition, runtimeEnv);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return { status: "failed", message: getAuthFailedMessage(state, serverName, message) };
@@ -230,14 +231,14 @@ async function attemptAutoAuth(
         serverUrl,
         definition,
         signal
-          ? { authStorageOptions: state.authStorageOptions, signal, runtime: state.oauthRuntime }
-          : { authStorageOptions: state.authStorageOptions, runtime: state.oauthRuntime },
+          ? { authStorageOptions: state.authStorageOptions, signal, runtime: state.oauthRuntime, ...(runtimeEnv ? { runtimeEnv } : {}) }
+          : { authStorageOptions: state.authStorageOptions, runtime: state.oauthRuntime, ...(runtimeEnv ? { runtimeEnv } : {}) },
       );
     } else {
       if (signal) {
-        await authenticate(serverName, serverUrl, definition, { signal, runtime: state.oauthRuntime });
+        await authenticate(serverName, serverUrl, definition, { signal, runtime: state.oauthRuntime, ...(runtimeEnv ? { runtimeEnv } : {}) });
       } else {
-        await authenticate(serverName, serverUrl, definition, { runtime: state.oauthRuntime });
+        await authenticate(serverName, serverUrl, definition, { runtime: state.oauthRuntime, ...(runtimeEnv ? { runtimeEnv } : {}) });
       }
     }
     return { status: "success" };
@@ -444,7 +445,15 @@ export async function executeAuthStart(state: McpExtensionState, serverName: str
   if (isServerDisabled(definition)) return disabledResult("auth-start", serverName);
 
   try {
-    const serverUrl = resolveServerUrl(definition);
+    const pendingUrl = getPendingAuthorizationUrl(serverName, state.authStorageOptions, state.oauthRuntime);
+    if (pendingUrl) {
+      return {
+        content: [{ type: "text" as const, text: formatManualAuthInstructions(serverName, pendingUrl) }],
+        details: { mode: "auth-start", server: serverName, authorizationUrl: pendingUrl },
+      };
+    }
+    const runtimeEnv = state.resolveRuntimeEnv?.(serverName);
+    const serverUrl = resolveServerUrl(definition, runtimeEnv);
     if (!serverUrl || !supportsOAuth(definition)) {
       return {
         content: [{ type: "text" as const, text: `Server "${serverName}" is not configured for OAuth over HTTP.` }],
@@ -454,11 +463,11 @@ export async function executeAuthStart(state: McpExtensionState, serverName: str
 
     const { authorizationUrl } = state.authStorageOptions
       ? ownedSignal
-        ? await startAuth(serverName, serverUrl, definition, { authStorageOptions: state.authStorageOptions, signal: ownedSignal, runtime: state.oauthRuntime })
-        : await startAuth(serverName, serverUrl, definition, { authStorageOptions: state.authStorageOptions, runtime: state.oauthRuntime })
+        ? await startAuth(serverName, serverUrl, definition, { authStorageOptions: state.authStorageOptions, signal: ownedSignal, runtime: state.oauthRuntime, ...(runtimeEnv ? { runtimeEnv } : {}) })
+        : await startAuth(serverName, serverUrl, definition, { authStorageOptions: state.authStorageOptions, runtime: state.oauthRuntime, ...(runtimeEnv ? { runtimeEnv } : {}) })
       : ownedSignal
-        ? await startAuth(serverName, serverUrl, definition, { signal: ownedSignal, runtime: state.oauthRuntime })
-        : await startAuth(serverName, serverUrl, definition, { runtime: state.oauthRuntime });
+        ? await startAuth(serverName, serverUrl, definition, { signal: ownedSignal, runtime: state.oauthRuntime, ...(runtimeEnv ? { runtimeEnv } : {}) })
+        : await startAuth(serverName, serverUrl, definition, { runtime: state.oauthRuntime, ...(runtimeEnv ? { runtimeEnv } : {}) });
     if (!authorizationUrl) {
       return {
         content: [{ type: "text" as const, text: `OAuth authentication successful for "${serverName}".` }],

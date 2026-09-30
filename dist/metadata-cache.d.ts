@@ -5,6 +5,7 @@ export declare function getMetadataCachePath(): string;
 export declare function loadMetadataCache(): MetadataCache | null;
 export declare function saveMetadataCache(cache: MetadataCache): void;
 export declare function computeServerHash(definition: ServerEntry, environment?: NodeJS.ProcessEnv): string;
+export declare function bindServerCacheEnvironment(entry: ServerCacheEntry, environment: Readonly<NodeJS.ProcessEnv>): void;
 export declare function isServerCacheValid(entry: ServerCacheEntry, definition: ServerEntry, maxAgeMs?: number, environment?: NodeJS.ProcessEnv): boolean;
 export declare function parseDirectToolSelectors(selectors: string[]): {
     servers: Set<string>;

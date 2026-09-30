@@ -9,11 +9,11 @@ export declare function interpolateEnvVars(value: string, environment: NodeJS.Pr
 export declare function toStringRecord(value: unknown): Record<string, string> | undefined;
 export declare function interpolateEnvRecord(values: Record<string, string> | undefined, environment?: NodeJS.ProcessEnv): Record<string, string> | undefined;
 /** Resolve a secret value, executing only a single leading `!` command marker. */
-export declare function resolveCommandSecret(value: string, context: string): string;
-export declare function resolveCommandSecret(value: undefined, context: string): undefined;
-export declare function resolveCommandSecret(value: string | undefined, context: string): string | undefined;
+export declare function resolveCommandSecret(value: string, context: string, environment?: NodeJS.ProcessEnv): string;
+export declare function resolveCommandSecret(value: undefined, context: string, environment?: NodeJS.ProcessEnv): undefined;
+export declare function resolveCommandSecret(value: string | undefined, context: string, environment?: NodeJS.ProcessEnv): string | undefined;
 /** Resolve command markers in a configured record without mutating the input. */
-export declare function resolveCommandSecretsRecord(values: Record<string, string> | undefined, context: (key: string) => string): Record<string, string> | undefined;
+export declare function resolveCommandSecretsRecord(values: Record<string, string> | undefined, context: (key: string) => string, environment?: NodeJS.ProcessEnv): Record<string, string> | undefined;
 export declare function resolveServerUrl(definition: Pick<ServerEntry, "url">, environment?: NodeJS.ProcessEnv): string | undefined;
 export declare function resolveConfigPath(value: string | undefined, environment?: NodeJS.ProcessEnv): string | undefined;
 export declare function resolveBearerToken(definition: Pick<ServerEntry, "bearerToken" | "bearerTokenEnv">, environment?: NodeJS.ProcessEnv): string | undefined;

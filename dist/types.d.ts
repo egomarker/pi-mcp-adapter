@@ -7,6 +7,7 @@ export type Transport = McpTransport;
 export declare const MCP_STATUS_EVENT = "pi-mcp-adapter/status/v1";
 export declare const MCP_STATUS_SNAPSHOT_VERSION: 1;
 export type McpServerRuntimeStatus = "connected" | "cached" | "failed" | "needs-auth" | "not-connected" | "disabled";
+export type McpListenState = "active" | "dropped" | "re-establishing" | "legacy" | "not-listening" | "disconnected";
 export interface McpServerStatusSnapshot {
     readonly name: string;
     readonly status: McpServerRuntimeStatus;
@@ -14,6 +15,8 @@ export interface McpServerStatusSnapshot {
     readonly resourceCount?: number;
     readonly failedAgoSeconds?: number;
     readonly disabled: boolean;
+    readonly listenState: McpListenState;
+    readonly catalogStale?: boolean;
 }
 export interface McpStatusSnapshot {
     readonly version: typeof MCP_STATUS_SNAPSHOT_VERSION;
@@ -136,6 +139,7 @@ export interface UiServerHandle {
     sendToolResult: (result: CallToolResult) => void;
     sendResultPatch: (result: CallToolResult) => void;
     sendToolCancelled: (reason: string) => void;
+    sendResourceUpdated: (uri: string) => void;
     sendHostContext: (context: UiHostContext) => void;
     /** Get accumulated messages from this session */
     getSessionMessages: () => UiSessionMessages;
@@ -391,9 +395,8 @@ export interface McpSettings {
     approveTools?: boolean | string[];
     disableProxyTool?: boolean;
     /** Freeze direct-tool registration after the initial sync. Automatic metadata updates
-     * (reconnects, lazy-connect, tool-list-changed) won't rebuild the system prompt,
-     * preserving the prompt-cache prefix. The agent rediscovers explicitly via
-     * mcp({ connect: "server" }). Default: false. */
+     * and explicit reconnects won't rebuild the system prompt, preserving the
+     * prompt-cache prefix. Proxy/search/cache metadata still refreshes. Default: false. */
     freezeDirectTools?: boolean;
     autoAuth?: boolean;
     sampling?: boolean;
@@ -436,6 +439,8 @@ export interface McpConfig {
 }
 export interface McpAdapterOptions {
     config?: McpConfig;
+    /** Complete environment visible to one eligible server connection attempt. */
+    resolveRuntimeEnv?: (serverName: string) => Readonly<NodeJS.ProcessEnv>;
     configPath?: string;
 }
 export type ServerDefinition = ServerEntry;

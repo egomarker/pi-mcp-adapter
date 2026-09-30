@@ -133,6 +133,8 @@ export interface ServerConnection {
   client: Client;
   transport: Transport;
   definition: ServerDefinition;
+  /** Immutable environment snapshot used for this connection attempt. */
+  runtimeEnv: Readonly<NodeJS.ProcessEnv>;
   tools: McpTool[];
   /** Cache hints from the server's aggregated tools/list result. */
   toolListHints?: Partial<Pick<ListToolsResult, "ttlMs" | "cacheScope">> | undefined;
@@ -218,7 +220,10 @@ export class McpServerManager {
   private stopped = false;
 
   /** Default cwd for stdio servers without an explicit config `cwd`. */
-  constructor(private readonly defaultCwd?: string) {}
+  constructor(
+    private readonly defaultCwd?: string,
+    private readonly resolveRuntimeEnv: (serverName: string) => Readonly<NodeJS.ProcessEnv> = () => process.env,
+  ) {}
 
   setSamplingConfig(config: ServerSamplingConfig | undefined): void {
     this.samplingConfig = config;
@@ -326,12 +331,18 @@ export class McpServerManager {
 
     const credentialsInvalidated = existing?.status === "needs-auth"
       && existing.credentialsInvalidated === true;
+    const configuredTransports = [definition.command, definition.url, definition.socket]
+      .filter(value => typeof value === "string" && value.length > 0);
+    if (configuredTransports.length !== 1) {
+      throw new Error(`Server ${name} must configure exactly one of command, url, or socket`);
+    }
+    const runtimeEnv = { ...this.resolveRuntimeEnv(name) };
     const generation = this.closeGenerations.get(name) ?? 0;
     const attemptController = new AbortController();
     const attemptSignal = combineAbortSignals(ownedSignal, attemptController.signal);
-    const connectionAttempt = this.createConnection(name, definition, attemptSignal, ownedSignal, credentialsInvalidated);
+    const connectionAttempt = this.createConnection(name, definition, runtimeEnv, attemptSignal, ownedSignal, credentialsInvalidated);
     const promise = definition.url
-      ? connectionAttempt.catch(async error => { throw await this.enrichHttpConnectionError(definition, error); })
+      ? connectionAttempt.catch(async error => { throw await this.enrichHttpConnectionError(definition, error, runtimeEnv, ownedSignal); })
       : connectionAttempt;
     this.connectPromises.set(name, promise);
     this.connectAttempts.set(name, attemptController);
@@ -764,6 +775,7 @@ export class McpServerManager {
   private async createConnection(
     name: string,
     definition: ServerDefinition,
+    runtimeEnv: Readonly<NodeJS.ProcessEnv>,
     signal?: AbortSignal,
     requestSignal?: AbortSignal,
     credentialsInvalidated = false,
@@ -784,19 +796,13 @@ export class McpServerManager {
     let invalidated = credentialsInvalidated;
     let transportAlreadyTraced = false;
     let stderrTail: Buffer<ArrayBufferLike> = Buffer.alloc(0);
-    const configuredTransports = [definition.command, definition.url, definition.socket]
-      .filter(value => typeof value === "string" && value.length > 0);
-    if (configuredTransports.length !== 1) {
-      throw new Error(`Server ${name} must configure exactly one of command, url, or socket`);
-    }
-
     const requestOptions = this.buildRequestOptions(definition, requestSignal);
 
     if (definition.command) {
       client = this.createClient(name, definition);
       let command = definition.command;
-      let args = (definition.args ?? []).map((argument) => interpolateEnvVars(argument));
-      const cwd = resolveConfigPath(definition.cwd) ?? this.defaultCwd;
+      let args = (definition.args ?? []).map((argument) => interpolateEnvVars(argument, runtimeEnv));
+      const cwd = resolveConfigPath(definition.cwd, runtimeEnv) ?? this.defaultCwd;
       if (cwd !== undefined) {
         const cwdStats = statSync(cwd, { throwIfNoEntry: false });
         if (!cwdStats) throw new Error(`MCP server "${name}" configured cwd does not exist: "${cwd}"`);
@@ -804,7 +810,7 @@ export class McpServerManager {
       }
 
       if (command === "npx" || command === "npm") {
-        const resolved = await resolveNpxBinary(command, args, signal);
+        const resolved = await resolveNpxBinary(command, args, signal, runtimeEnv);
         if (resolved) {
           command = resolved.isJs ? "node" : resolved.binPath;
           args = resolved.isJs ? [resolved.binPath, ...resolved.extraArgs] : resolved.extraArgs;
@@ -817,7 +823,7 @@ export class McpServerManager {
       const stdioTransport = new StdioClientTransport({
         command,
         args,
-        env: resolveEnv(definition.env, name, definition.literalEnv === true),
+        env: resolveEnv(runtimeEnv, definition.env, name, definition.literalEnv === true),
         ...(cwd !== undefined ? { cwd } : {}),
         stderr: definition.debug ? "inherit" : "pipe",
       });
@@ -837,6 +843,7 @@ export class McpServerManager {
         signal,
         traceObserver,
         invalidated,
+        runtimeEnv,
       );
       client = httpConnection.client;
       transport = httpConnection.transport;
@@ -846,6 +853,7 @@ export class McpServerManager {
           client,
           transport,
           definition,
+          runtimeEnv,
           tools: [],
           resources: [],
           prompts: [],
@@ -860,7 +868,7 @@ export class McpServerManager {
       transportAlreadyTraced = traceObserver !== undefined;
     } else {
       client = this.createClient(name, definition);
-      transport = new UnixSocketClientTransport(resolveConfigPath(definition.socket!)!);
+      transport = new UnixSocketClientTransport(resolveConfigPath(definition.socket!, runtimeEnv)!);
     }
 
     if (traceObserver && !transportAlreadyTraced) {
@@ -882,6 +890,7 @@ export class McpServerManager {
         client,
         transport,
         definition,
+        runtimeEnv,
         tools: [],
         toolsRevision: 0,
         resources: [],
@@ -951,6 +960,7 @@ export class McpServerManager {
           client,
           transport,
           definition,
+          runtimeEnv,
           tools: [],
           resources: [],
           prompts: [],
@@ -975,16 +985,30 @@ export class McpServerManager {
     }
   }
 
-  private async enrichHttpConnectionError(definition: ServerDefinition, error: unknown): Promise<Error> {
-    const originalMessage = error instanceof Error ? error.message : String(error);
+  private async enrichHttpConnectionError(definition: ServerDefinition, error: unknown, runtimeEnv: Readonly<NodeJS.ProcessEnv>, signal?: AbortSignal): Promise<Error> {
+    if (signal?.aborted) return signal.reason instanceof Error ? signal.reason : error instanceof Error ? error : new Error("MCP request aborted");
     if (isTransientHttpConnectError(error)) {
-      return new Error(`${originalMessage} — endpoint is temporarily unavailable (HTTP 503)`, { cause: error });
+      return new SdkHttpError(
+        SdkErrorCode.ClientHttpNotImplemented,
+        "MCP endpoint is temporarily unavailable (HTTP 503)",
+        { status: 503 },
+      );
+    }
+    let safeMessage = error instanceof Error ? error.message : String(error);
+    if (safeMessage.startsWith("Missing environment variable") || safeMessage === "Invalid MCP server URL after environment interpolation") {
+      return new Error(safeMessage);
     }
     try {
-      const probe = await probeMcpEndpoint(resolveServerUrl(definition)!);
-      return new Error(`${originalMessage} — probe: ${probe.classification}`, { cause: error });
+      const resolvedUrl = resolveServerUrl(definition, runtimeEnv);
+      if (resolvedUrl) safeMessage = safeMessage.replaceAll(resolvedUrl, "[redacted-url]");
     } catch {
-      return error instanceof Error ? error : new Error(originalMessage);
+      safeMessage = "MCP HTTP connection failed";
+    }
+    try {
+      const probe = await probeMcpEndpoint(resolveServerUrl(definition, runtimeEnv)!);
+      return new Error(`${safeMessage} — probe: ${probe.classification}`);
+    } catch {
+      return new Error(safeMessage);
     }
   }
 
@@ -1179,9 +1203,10 @@ export class McpServerManager {
     signal?: AbortSignal,
     traceObserver?: McpTraceObserver,
     credentialsInvalidated = false,
+    runtimeEnv: Readonly<NodeJS.ProcessEnv> = process.env,
   ): Promise<{ client: Client; transport: Transport; status: "connected" | "needs-auth"; credentialsInvalidated: boolean }> {
     throwIfAborted(signal);
-    const serverUrl = resolveServerUrl(definition)!;
+    const serverUrl = resolveServerUrl(definition, runtimeEnv)!;
     const url = new URL(serverUrl);
 
     // Resolve secret commands only for this connection attempt, without
@@ -1191,6 +1216,7 @@ export class McpServerManager {
     const headers = resolveCommandSecretsRecord(
       definition.headers,
       key => `MCP server "${serverName}" HTTP header "${key}"`,
+      runtimeEnv,
     ) ?? {};
 
     // Resolve bearer auth before creating requestInit so every attempted
@@ -1200,8 +1226,8 @@ export class McpServerManager {
       : undefined;
     if (definition.auth === "bearer") {
       const token = commandBearer
-        ? resolveCommandSecret(commandBearer, `MCP server "${serverName}" HTTP bearer token`)
-        : resolveBearerToken(definition)
+        ? resolveCommandSecret(commandBearer, `MCP server "${serverName}" HTTP bearer token`, runtimeEnv)
+        : resolveBearerToken(definition, runtimeEnv)
           ?? (definition.bearerToken === undefined && definition.bearerTokenEnv === undefined && definition.bearerTokenStore === true
             ? getBearerTokenForUrl(serverName, serverUrl)
             : undefined);
@@ -1218,15 +1244,17 @@ export class McpServerManager {
 
     const requestInit = Object.keys(headers).length > 0 ? { headers } : undefined;
     const requestFetch = definition.requestHeadersCommand
-      ? createRequestHeadersCommandFetch(definition.requestHeadersCommand)
+      ? createRequestHeadersCommandFetch(definition.requestHeadersCommand, globalThis.fetch, runtimeEnv)
       : undefined;
     const createAuthProvider = (): McpOAuthProvider => new McpOAuthProvider(
       serverName,
       serverUrl,
-      extractOAuthConfig(definition),
+      extractOAuthConfig(definition, runtimeEnv),
       { onRedirect: async () => {} },
       this.authStorageOptions,
       this.oauthRuntime?.signal,
+      undefined,
+      runtimeEnv,
     );
 
     // Explicit OAuth checks secure storage immediately. Implicit OAuth keeps
@@ -1634,9 +1662,9 @@ export class McpServerManager {
 /**
  * Resolve environment variables with interpolation.
  */
-function resolveEnv(env: Record<string, string> | undefined, serverName: string, literalEnv = false): Record<string, string> {
+function resolveEnv(runtimeEnv: Readonly<NodeJS.ProcessEnv>, env: Record<string, string> | undefined, serverName: string, literalEnv = false): Record<string, string> {
   const resolved: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
+  for (const [key, value] of Object.entries(runtimeEnv)) {
     if (value !== undefined) resolved[key] = value;
   }
   if (literalEnv) return env ? { ...resolved, ...env } : resolved;
@@ -1644,6 +1672,7 @@ function resolveEnv(env: Record<string, string> | undefined, serverName: string,
   const overrides = resolveCommandSecretsRecord(
     env,
     key => `MCP server "${serverName}" stdio env "${key}"`,
+    runtimeEnv,
   );
   return overrides ? { ...resolved, ...overrides } : resolved;
 }
