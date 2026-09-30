@@ -13,6 +13,7 @@ const KEY_PREVIEW_LIMIT = 20;
 const KEY_MAX_BYTES = 120;
 const STRUCTURED_CONTENT_PRESERVE_MAX_BYTES = 4 * 1024;
 const STRUCTURED_CONTENT_FIELD_PRESERVE_MAX_BYTES = 512;
+const outputArtifactDirectories = new Set<string>();
 
 type Recordish = Record<string, unknown>;
 
@@ -440,6 +441,7 @@ async function saveArtifact(kind: string, text: string): Promise<{ path?: string
     const dir = await mkdtemp(join(tmpdir(), "pi-mcp-output-"));
     const path = join(dir, `${kind}-${randomBytes(4).toString("hex")}.txt`);
     await writeFile(path, text, { encoding: "utf8", mode: 0o600 });
+    outputArtifactDirectories.add(dir);
     return { path };
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
@@ -448,10 +450,18 @@ async function saveArtifact(kind: string, text: string): Promise<{ path?: string
 
 async function discardArtifact(path: string): Promise<void> {
   try {
-    await rm(dirname(path), { recursive: true, force: true });
+    const dir = dirname(path);
+    await rm(dir, { recursive: true, force: true });
+    outputArtifactDirectories.delete(dir);
   } catch {
     // Cleanup cannot increase the returned details payload.
   }
+}
+
+export async function cleanupMcpOutputArtifacts(): Promise<void> {
+  const directories = [...outputArtifactDirectories];
+  outputArtifactDirectories.clear();
+  await Promise.all(directories.map(dir => rm(dir, { recursive: true, force: true }).catch(() => undefined)));
 }
 
 function asRecord(value: unknown): Recordish | undefined {
