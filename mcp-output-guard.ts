@@ -13,8 +13,12 @@ const KEY_PREVIEW_LIMIT = 20;
 const KEY_MAX_BYTES = 120;
 const STRUCTURED_CONTENT_PRESERVE_MAX_BYTES = 4 * 1024;
 const STRUCTURED_CONTENT_FIELD_PRESERVE_MAX_BYTES = 512;
-const outputArtifactDirectories = new Set<string>();
+const outputArtifactDirectories = new Map<string, number>();
 let outputArtifactOwners = 0;
+let outputArtifactGeneration = 0;
+const outputArtifactOperations = new Map<number, number>();
+const outputArtifactOperationWaiters = new Map<number, Set<() => void>>();
+const outputArtifactCleanupPromises = new Map<number, Promise<void>>();
 
 type Recordish = Record<string, unknown>;
 
@@ -95,9 +99,22 @@ export async function guardMcpOutput(
   content: ContentBlock[],
   options: McpOutputGuardOptions = {},
 ): Promise<GuardedMcpOutput> {
-  const maxBytes = options.maxBytes ?? DEFAULT_MCP_OUTPUT_MAX_BYTES;
-  const maxLines = options.maxLines ?? DEFAULT_MCP_OUTPUT_MAX_LINES;
-  const detailsMaxBytes = options.detailsMaxBytes ?? DEFAULT_MCP_DETAILS_MAX_BYTES;
+  const artifactGeneration = beginOutputArtifactOperation();
+  try {
+    return await guardMcpOutputForGeneration(content, options, artifactGeneration);
+  } finally {
+    endOutputArtifactOperation(artifactGeneration);
+  }
+}
+
+async function guardMcpOutputForGeneration(
+  content: ContentBlock[],
+  options: McpOutputGuardOptions,
+  artifactGeneration: number,
+): Promise<GuardedMcpOutput> {
+  const maxBytes = positiveInt(options.maxBytes) ?? DEFAULT_MCP_OUTPUT_MAX_BYTES;
+  const maxLines = positiveInt(options.maxLines) ?? DEFAULT_MCP_OUTPUT_MAX_LINES;
+  const detailsMaxBytes = positiveInt(options.detailsMaxBytes) ?? DEFAULT_MCP_DETAILS_MAX_BYTES;
   const prefix = options.prefix ?? "";
   const suffix = options.suffix ?? "";
 
@@ -127,11 +144,11 @@ export async function guardMcpOutput(
   let outputGuard: McpOutputGuardDetails | undefined;
 
   if (stats.bytes > maxBytes || stats.lines > maxLines) {
-    const { path: fullOutputPath, error: writeError } = await saveArtifact("output", composedOutput);
-    const notice = formatTruncationNotice(stats, fullOutputPath, writeError);
+    const { path: fullOutputPath, error: writeError } = await saveArtifact("output", composedOutput, artifactGeneration);
+    const notice = boundedTruncationNotice(stats, fullOutputPath, writeError, maxBytes, maxLines);
     const previewBudget = reserveBudget(maxBytes, maxLines, notice);
     const preview = truncateHead(composedOutput, previewBudget.maxBytes, previewBudget.maxLines);
-    const finalText = `${preview.content}\n\n${notice}`;
+    const finalText = preview.content ? `${preview.content}\n\n${notice}` : notice;
     const finalStats = textStats(finalText);
 
     guardedContent = [{ type: "text" as const, text: finalText }, ...imageBlocks];
@@ -149,7 +166,7 @@ export async function guardMcpOutput(
 
   const mcpResult = options.rawMcpResult === undefined
     ? undefined
-    : await boundMcpResult(options.rawMcpResult, detailsMaxBytes);
+    : await boundMcpResult(options.rawMcpResult, detailsMaxBytes, artifactGeneration);
 
   return {
     content: guardedContent,
@@ -261,7 +278,27 @@ function formatTruncationNotice(
   if (fullOutputPath) {
     return `${base} Full text saved to: ${fullOutputPath} — use read with offset/limit or grep to inspect.]`;
   }
-  return `${base} Full output could not be saved: ${writeError ?? "unknown error"}]`;
+  const safeError = (writeError ?? "unknown error").replace(/\s+/g, " ");
+  return `${base} Full output could not be saved: ${safeError}]`;
+}
+
+function boundedTruncationNotice(
+  stats: { bytes: number; lines: number },
+  fullOutputPath: string | undefined,
+  writeError: string | undefined,
+  maxBytes: number,
+  maxLines: number,
+): string {
+  const candidates = [
+    formatTruncationNotice(stats, fullOutputPath, writeError),
+    ...(fullOutputPath ? [`[MCP output truncated. Full text: ${fullOutputPath}]`] : []),
+    `[MCP output truncated: ${stats.lines.toLocaleString()} lines / ${formatSize(stats.bytes)}.]`,
+    "[MCP output truncated]",
+  ];
+  return candidates.find(candidate => {
+    const candidateStats = textStats(candidate);
+    return candidateStats.bytes <= maxBytes && candidateStats.lines <= maxLines;
+  }) ?? truncateHead(candidates.at(-1)!, maxBytes, maxLines).content;
 }
 
 /**
@@ -269,14 +306,15 @@ function formatTruncationNotice(
  * detailsMaxBytes; otherwise replace it with a compact summary and spill the
  * raw JSON to a temp file.
  */
-async function boundMcpResult(result: unknown, detailsMaxBytes: number): Promise<unknown> {
-  const raw = safeStringify(result);
+async function boundMcpResult(result: unknown, detailsMaxBytes: number, artifactGeneration: number): Promise<unknown> {
+  const serialized = serializeUnknown(result);
+  const raw = serialized.text;
   const rawBytes = byteLength(raw);
-  if (rawBytes <= detailsMaxBytes) return result;
+  if (serialized.jsonCompatible && rawBytes <= detailsMaxBytes) return result;
   const marker = { omitted: true } as const;
   if (byteLength(safeStringify(marker)) > detailsMaxBytes) return undefined;
 
-  const summary = await summarizeMcpResult(result, raw, rawBytes);
+  const summary = await summarizeMcpResult(result, raw, rawBytes, artifactGeneration);
   if (byteLength(safeStringify(summary)) <= detailsMaxBytes) return summary;
   return compactMcpResultOmission(summary, marker, detailsMaxBytes);
 }
@@ -302,8 +340,8 @@ async function compactMcpResultOmission(
   return byteLength(safeStringify(withSize)) <= maxBytes ? withSize : marker;
 }
 
-async function summarizeMcpResult(result: unknown, raw: string, rawBytes: number): Promise<McpResultSummary> {
-  const { path: fullResultPath, error: resultWriteError } = await saveArtifact("mcp-result", raw);
+async function summarizeMcpResult(result: unknown, raw: string, rawBytes: number, artifactGeneration: number): Promise<McpResultSummary> {
+  const { path: fullResultPath, error: resultWriteError } = await saveArtifact("mcp-result", raw, artifactGeneration);
 
   const record = asRecord(result);
   const content = Array.isArray(record?.content) ? record.content : [];
@@ -437,15 +475,50 @@ function serializedObjectEntryBytes(key: string, value: unknown, hasPrevious: bo
   return Math.max(0, byteLength(serialized) - byteLength("{}")) + (hasPrevious ? 1 : 0);
 }
 
-async function saveArtifact(kind: string, text: string): Promise<{ path?: string; error?: string }> {
+async function saveArtifact(kind: string, text: string, artifactGeneration: number): Promise<{ path?: string; error?: string }> {
+  let dir: string | undefined;
   try {
-    const dir = await mkdtemp(join(tmpdir(), "pi-mcp-output-"));
+    dir = await mkdtemp(join(tmpdir(), "pi-mcp-output-"));
+    outputArtifactDirectories.set(dir, artifactGeneration);
     const path = join(dir, `${kind}-${randomBytes(4).toString("hex")}.txt`);
     await writeFile(path, text, { encoding: "utf8", mode: 0o600 });
-    outputArtifactDirectories.add(dir);
     return { path };
   } catch (error) {
+    if (dir) {
+      outputArtifactDirectories.delete(dir);
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
     return { error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function beginOutputArtifactOperation(): number {
+  const generation = outputArtifactGeneration;
+  outputArtifactOperations.set(generation, (outputArtifactOperations.get(generation) ?? 0) + 1);
+  return generation;
+}
+
+function endOutputArtifactOperation(generation: number): void {
+  const remaining = Math.max(0, (outputArtifactOperations.get(generation) ?? 1) - 1);
+  if (remaining > 0) {
+    outputArtifactOperations.set(generation, remaining);
+    return;
+  }
+  outputArtifactOperations.delete(generation);
+  for (const resolve of outputArtifactOperationWaiters.get(generation) ?? []) resolve();
+  outputArtifactOperationWaiters.delete(generation);
+}
+
+async function waitForOutputArtifactOperations(generation: number): Promise<void> {
+  while ((outputArtifactOperations.get(generation) ?? 0) > 0) {
+    await new Promise<void>(resolve => {
+      let waiters = outputArtifactOperationWaiters.get(generation);
+      if (!waiters) {
+        waiters = new Set();
+        outputArtifactOperationWaiters.set(generation, waiters);
+      }
+      waiters.add(resolve);
+    });
   }
 }
 
@@ -460,20 +533,47 @@ async function discardArtifact(path: string): Promise<void> {
 }
 
 export function acquireMcpOutputArtifactOwner(): () => Promise<void> {
+  const generation = outputArtifactGeneration;
   outputArtifactOwners++;
   let released = false;
   return async () => {
     if (released) return;
     released = true;
     outputArtifactOwners = Math.max(0, outputArtifactOwners - 1);
-    if (outputArtifactOwners === 0) await cleanupMcpOutputArtifacts();
+    if (outputArtifactOwners === 0) {
+      // Close this generation synchronously. A replacement owner or late
+      // standalone guard starts in the next generation and cannot have its
+      // artifacts removed by the retiring owner's asynchronous cleanup.
+      if (outputArtifactGeneration === generation) outputArtifactGeneration++;
+      await cleanupMcpOutputArtifactGeneration(generation);
+    }
   };
 }
 
+async function cleanupMcpOutputArtifactGeneration(generation: number): Promise<void> {
+  const existing = outputArtifactCleanupPromises.get(generation);
+  if (existing) return existing;
+  const cleanup = (async () => {
+    await waitForOutputArtifactOperations(generation);
+    const directories = [...outputArtifactDirectories]
+      .filter(([, artifactGeneration]) => artifactGeneration === generation)
+      .map(([dir]) => dir);
+    await Promise.all(directories.map(async dir => {
+      try {
+        await rm(dir, { recursive: true, force: true });
+        if (outputArtifactDirectories.get(dir) === generation) outputArtifactDirectories.delete(dir);
+      } catch {
+        // Retain failed paths so a later cleanup can retry them.
+      }
+    }));
+  })().finally(() => outputArtifactCleanupPromises.delete(generation));
+  outputArtifactCleanupPromises.set(generation, cleanup);
+  return cleanup;
+}
+
 export async function cleanupMcpOutputArtifacts(): Promise<void> {
-  const directories = [...outputArtifactDirectories];
-  outputArtifactDirectories.clear();
-  await Promise.all(directories.map(dir => rm(dir, { recursive: true, force: true }).catch(() => undefined)));
+  const generations = new Set([...outputArtifactDirectories.values(), ...outputArtifactOperations.keys()]);
+  await Promise.all([...generations].map(cleanupMcpOutputArtifactGeneration));
 }
 
 function asRecord(value: unknown): Recordish | undefined {
@@ -481,11 +581,18 @@ function asRecord(value: unknown): Recordish | undefined {
 }
 
 function safeStringify(value: unknown): string {
+  return serializeUnknown(value).text;
+}
+
+function serializeUnknown(value: unknown): { text: string; jsonCompatible: boolean } {
   try {
     // The output guard measures and spills raw MCP results; it does not render this JSON for the model.
-    return JSON.stringify(value);
+    const text = JSON.stringify(value);
+    return text === undefined
+      ? { text: String(value), jsonCompatible: false }
+      : { text, jsonCompatible: true };
   } catch {
-    return String(value);
+    return { text: String(value), jsonCompatible: false };
   }
 }
 

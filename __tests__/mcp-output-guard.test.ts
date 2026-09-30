@@ -63,6 +63,9 @@ describe("guardMcpOutput", () => {
     expect(guarded.content).toHaveLength(1);
     expect(guarded.content[0]).toMatchObject({ type: "text" });
     const returnedText = guarded.content[0].type === "text" ? guarded.content[0].text : "";
+    expect(Buffer.byteLength(returnedText, "utf8")).toBeLessThanOrEqual(300);
+    expect(returnedText.split("\n")).toHaveLength(guarded.outputGuard!.returnedLines);
+    expect(guarded.outputGuard!.returnedLines).toBeLessThanOrEqual(8);
     expect(returnedText).toContain("MCP text output truncated");
     expect(returnedText).toContain("Full text saved to:");
     expect(returnedText).not.toContain("line-19");
@@ -276,6 +279,19 @@ describe("guardMcpOutput", () => {
     expect(guarded.mcpResult).toBeUndefined();
   });
 
+  it("never returns non-JSON raw details through the bounded fast path", async () => {
+    const circular: Record<string, unknown> = { body: "x".repeat(5_000) };
+    circular.self = circular;
+    for (const rawMcpResult of [circular, { count: 1n }, () => "unserializable"]) {
+      const guarded = await guardMcpOutput(
+        [{ type: "text", text: "ok" }],
+        { detailsMaxBytes: 128, rawMcpResult },
+      );
+      expect(guarded.mcpResult).not.toBe(rawMcpResult);
+      expect(Buffer.byteLength(JSON.stringify(guarded.mcpResult), "utf8")).toBeLessThanOrEqual(128);
+    }
+  });
+
   it("passes image blocks through untouched, even large ones", async () => {
     const image = { type: "image" as const, data: "A".repeat(100_000), mimeType: "image/png" };
     const guarded = await guardMcpOutput(
@@ -312,6 +328,23 @@ describe("guardMcpOutput", () => {
     const returnedText = guarded.content[0].type === "text" ? guarded.content[0].text : "";
     expect(returnedText).toContain("entry-0");
     expect(returnedText).not.toContain("entry-29");
+  });
+
+  it("keeps truncation notices inside very small byte and line bounds", async () => {
+    for (const limits of [
+      { maxBytes: 100, maxLines: 10 },
+      { maxBytes: 10_000, maxLines: 1 },
+      { maxBytes: 1, maxLines: 1 },
+    ]) {
+      const guarded = await guardMcpOutput(
+        [{ type: "text", text: Array.from({ length: 20 }, () => "🙂".repeat(50)).join("\n") }],
+        limits,
+      );
+      const returnedText = guarded.content[0].type === "text" ? guarded.content[0].text : "";
+      expect(Buffer.byteLength(returnedText, "utf8")).toBeLessThanOrEqual(limits.maxBytes);
+      expect(returnedText ? returnedText.split("\n").length : 0).toBeLessThanOrEqual(limits.maxLines);
+      expect(guarded.outputGuard?.returnedBytes).toBe(Buffer.byteLength(returnedText, "utf8"));
+    }
   });
 
   it("keeps prefixes and suffixes inside the saved full output", async () => {
@@ -355,6 +388,24 @@ describe("guardMcpOutput", () => {
     const releaseFirst=acquireMcpOutputArtifactOwner(),releaseSecond=acquireMcpOutputArtifactOwner();
     const guarded=await guardMcpOutput([{type:"text",text:"x".repeat(100)}],{maxBytes:20,maxLines:10});const path=guarded.outputGuard?.fullOutputPath!;
     await releaseFirst();expect(await readFile(path,"utf8")).toHaveLength(100);await releaseSecond();await expect(readFile(path,"utf8")).rejects.toThrow();
+  });
+
+  it("waits for in-flight spill creation before final-owner cleanup", async () => {
+    const release=acquireMcpOutputArtifactOwner();
+    const text="x".repeat(8*1024*1024);const guarding=guardMcpOutput([{type:"text",text}],{maxBytes:20,maxLines:10,detailsMaxBytes:1024,rawMcpResult:{structuredContent:{text}}});
+    await release();
+    const guarded=await guarding;const paths=[guarded.outputGuard?.fullOutputPath,(guarded.mcpResult as McpResultSummary).fullResultPath];expect(paths.every(Boolean)).toBe(true);
+    for(const path of paths)await expect(readFile(path!,"utf8")).rejects.toThrow();
+  });
+
+  it("isolates replacement-owner artifacts from a retiring generation cleanup", async () => {
+    const releaseRetiring=acquireMcpOutputArtifactOwner();
+    const guarding=guardMcpOutput([{type:"text",text:"x".repeat(8*1024*1024)}],{maxBytes:20,maxLines:10});
+    const retiring=releaseRetiring();const releaseReplacement=acquireMcpOutputArtifactOwner();
+    const replacement=await guardMcpOutput([{type:"text",text:"y".repeat(100)}],{maxBytes:20,maxLines:10});const replacementPath=replacement.outputGuard?.fullOutputPath;expect(replacementPath).toBeTruthy();
+    const guarded=await guarding;const retiringPath=guarded.outputGuard?.fullOutputPath;expect(retiringPath).toBeTruthy();
+    await retiring;await expect(readFile(retiringPath!,"utf8")).rejects.toThrow();expect(await readFile(replacementPath!,"utf8")).toHaveLength(100);
+    await releaseReplacement();await expect(readFile(replacementPath!,"utf8")).rejects.toThrow();
   });
 
   it("returns no mcpResult when rawMcpResult is not provided", async () => {
