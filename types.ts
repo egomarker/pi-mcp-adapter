@@ -445,6 +445,8 @@ export interface McpConfig {
 export interface McpAdapterOptions {
   config?: McpConfig;
   configPath?: string;
+  /** Default true. SDK hosts can defer startup to the real session_start context. */
+  initializeOnLoad?: boolean;
 }
 
 // Alias for clarity

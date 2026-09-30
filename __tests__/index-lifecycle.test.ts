@@ -786,6 +786,45 @@ describe("mcpAdapter session lifecycle", () => {
     expect(mocks.executeStatus).toHaveBeenCalledWith(state);
   });
 
+  it.each(["eager", "keep-alive"])("can defer %s startup to the real SDK session context", async (lifecycle) => {
+    const config = { mcpServers: { demo: { url: "http://localhost:3999/mcp", lifecycle } } };
+    mocks.loadMcpConfig.mockReturnValue(config);
+    const state = createState();
+    state.config = config;
+    mocks.initializeMcp.mockResolvedValue(state);
+
+    const { createMcpAdapter } = await import("../index.ts");
+    const { api, handlers } = createPi();
+    createMcpAdapter({ initializeOnLoad: false })(api);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mocks.initializeMcp).not.toHaveBeenCalled();
+    expect(api.registerTool).toHaveBeenCalledWith(expect.objectContaining({ name: "mcp" }));
+
+    const ctx = { hasUI: false, cwd: "/sdk/session" };
+    await handlers.get("session_start")?.({}, ctx);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mocks.initializeMcp).toHaveBeenCalledTimes(1);
+    expect(mocks.initializeMcp.mock.calls[0][1]).toBe(ctx);
+
+    await handlers.get("session_shutdown")?.();
+    expect(state.lifecycle.gracefulShutdown).toHaveBeenCalledTimes(1);
+    expect(mocks.createOAuthRuntime.mock.results[0].value.signal.aborted).toBe(true);
+  });
+
+  it("leaves deferred startup dormant if the SDK shuts down without a session", async () => {
+    mocks.loadMcpConfig.mockReturnValue({
+      mcpServers: { demo: { url: "http://localhost:3999/mcp", lifecycle: "eager" } },
+    });
+    const { createMcpAdapter } = await import("../index.ts");
+    const { api, handlers } = createPi();
+    createMcpAdapter({ initializeOnLoad: false })(api);
+    await handlers.get("session_shutdown")?.();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mocks.initializeMcp).not.toHaveBeenCalled();
+    expect(mocks.createOAuthRuntime).not.toHaveBeenCalled();
+  });
+
   it("does not initialize at load when startup servers are absent or disabled", async () => {
     mocks.loadMcpConfig.mockReturnValue({
       mcpServers: {

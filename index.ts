@@ -780,7 +780,7 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
 
   const initialDirectTools = syncDirectTools(earlyConfig, earlyCache).specs;
   syncProxyTool(earlyConfig, earlyCache, initialDirectTools);
-  startLoadTimeInitialization();
+  if (options.initializeOnLoad !== false) startLoadTimeInitialization();
 }
 
 export function createMcpAdapter(options: McpAdapterOptions = {}) {
@@ -789,6 +789,7 @@ export function createMcpAdapter(options: McpAdapterOptions = {}) {
     installMcpAdapter(pi, {
       configPath: options.configPath,
       config: factoryConfig !== undefined ? cloneMcpConfig(factoryConfig) : undefined,
+      initializeOnLoad: options.initializeOnLoad,
     });
   };
 }
