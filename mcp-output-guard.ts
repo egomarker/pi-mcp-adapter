@@ -14,6 +14,7 @@ const KEY_MAX_BYTES = 120;
 const STRUCTURED_CONTENT_PRESERVE_MAX_BYTES = 4 * 1024;
 const STRUCTURED_CONTENT_FIELD_PRESERVE_MAX_BYTES = 512;
 const outputArtifactDirectories = new Set<string>();
+let outputArtifactOwners = 0;
 
 type Recordish = Record<string, unknown>;
 
@@ -456,6 +457,17 @@ async function discardArtifact(path: string): Promise<void> {
   } catch {
     // Cleanup cannot increase the returned details payload.
   }
+}
+
+export function acquireMcpOutputArtifactOwner(): () => Promise<void> {
+  outputArtifactOwners++;
+  let released = false;
+  return async () => {
+    if (released) return;
+    released = true;
+    outputArtifactOwners = Math.max(0, outputArtifactOwners - 1);
+    if (outputArtifactOwners === 0) await cleanupMcpOutputArtifacts();
+  };
 }
 
 export async function cleanupMcpOutputArtifacts(): Promise<void> {

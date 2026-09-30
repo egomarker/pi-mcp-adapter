@@ -2,7 +2,7 @@ import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { cleanupMcpOutputArtifacts, guardMcpOutput, resolveMcpOutputGuardOptions, type McpResultSummary } from "../mcp-output-guard.ts";
+import { acquireMcpOutputArtifactOwner, cleanupMcpOutputArtifacts, guardMcpOutput, resolveMcpOutputGuardOptions, type McpResultSummary } from "../mcp-output-guard.ts";
 
 describe("guardMcpOutput", () => {
   it("leaves small MCP output unchanged and keeps the raw result in details", async () => {
@@ -349,6 +349,12 @@ describe("guardMcpOutput", () => {
     const guarded=await guardMcpOutput([{type:"text",text:"x".repeat(100)}],{maxBytes:20,maxLines:10});
     const path=guarded.outputGuard?.fullOutputPath;expect(path).toBeTruthy();expect(await readFile(path!,"utf8")).toHaveLength(100);
     await cleanupMcpOutputArtifacts();await expect(readFile(path!,"utf8")).rejects.toThrow();
+  });
+
+  it("keeps spills until the final runtime owner releases", async () => {
+    const releaseFirst=acquireMcpOutputArtifactOwner(),releaseSecond=acquireMcpOutputArtifactOwner();
+    const guarded=await guardMcpOutput([{type:"text",text:"x".repeat(100)}],{maxBytes:20,maxLines:10});const path=guarded.outputGuard?.fullOutputPath!;
+    await releaseFirst();expect(await readFile(path,"utf8")).toHaveLength(100);await releaseSecond();await expect(readFile(path,"utf8")).rejects.toThrow();
   });
 
   it("returns no mcpResult when rawMcpResult is not provided", async () => {
