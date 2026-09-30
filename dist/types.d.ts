@@ -439,6 +439,8 @@ export interface McpConfig {
 }
 export interface McpAdapterOptions {
     config?: McpConfig;
+    /** Disable load-time eager startup when the host synchronously owns session_start. Defaults to true. */
+    initializeOnLoad?: boolean;
     /** Complete environment visible to one eligible server connection attempt. */
     resolveRuntimeEnv?: (serverName: string) => Readonly<NodeJS.ProcessEnv>;
     configPath?: string;

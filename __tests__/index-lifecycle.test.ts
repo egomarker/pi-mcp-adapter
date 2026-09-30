@@ -1408,6 +1408,17 @@ describe("mcpAdapter session lifecycle", () => {
     expect(mocks.executeStatus).toHaveBeenCalledWith(state);
   });
 
+  it("lets synchronous SDK hosts disable load-time initialization", async () => {
+    const config={mcpServers:{demo:{url:"http://localhost:3999/mcp",lifecycle:"eager" as const}}};
+    const state=createState();state.config=config;mocks.initializeMcp.mockResolvedValue(state);
+    const {createMcpAdapter}=await import("../index.ts");const {api,handlers}=createPi();
+    createMcpAdapter({config,initializeOnLoad:false})(api);
+    await new Promise(resolve=>setImmediate(resolve));
+    expect(mocks.initializeMcp).not.toHaveBeenCalled();
+    await handlers.get("session_start")?.({}, {hasUI:false});
+    expect(mocks.initializeMcp).toHaveBeenCalledTimes(1);
+  });
+
   it("does not fail load-time tool sync before Pi action methods are bound", async () => {
     mocks.loadMcpConfig.mockReturnValue({
       mcpServers: {

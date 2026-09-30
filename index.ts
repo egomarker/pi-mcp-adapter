@@ -1250,7 +1250,7 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
   // eager call, the tool-groups expansion runs before MCP initialization
   // completes and emits false `[unknown-tool] mcp__<server>` diagnostics.
   syncNamespaceTools(earlyConfig, earlyCache, initialDirectResult.reservedDirectNames, initialDirectResult.activeDirectNames);
-  startLoadTimeInitialization();
+  if (options.initializeOnLoad !== false) startLoadTimeInitialization();
 }
 
 export function createMcpAdapter(options: McpAdapterOptions = {}) {
@@ -1260,6 +1260,7 @@ export function createMcpAdapter(options: McpAdapterOptions = {}) {
       ...(options.configPath !== undefined ? { configPath: options.configPath } : {}),
       ...(factoryConfig !== undefined ? { config: cloneMcpConfig(factoryConfig) } : {}),
       ...(options.resolveRuntimeEnv !== undefined ? { resolveRuntimeEnv: options.resolveRuntimeEnv } : {}),
+      ...(options.initializeOnLoad !== undefined ? { initializeOnLoad: options.initializeOnLoad } : {}),
     });
   };
 }
