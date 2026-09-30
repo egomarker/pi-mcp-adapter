@@ -21,7 +21,7 @@ import { createMcpRuntimeOwner, createOwnedUi, isAbortError, type McpRuntimeOwne
 import { publishMcpStatusShutdown } from "./mcp-status.ts";
 import { runMcpScript } from "./mcp-code.ts";
 import { cleanupMaterializedBinaryResources } from "./tool-registrar.ts";
-import { cleanupMcpOutputArtifacts } from "./mcp-output-guard.ts";
+import { acquireMcpOutputArtifactOwner } from "./mcp-output-guard.ts";
 import { syncNamespaceProxyTools } from "./namespace-tools.ts";
 
 export type { McpAdapterOptions } from "./types.ts";
@@ -559,7 +559,7 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
 
   function startInitialization(ctx: ExtensionContext, owner: McpRuntimeOwner, oauthRuntime: McpOAuthRuntime, generation: number, staleReason: string): Promise<void> {
     owner.addCleanup(() => cleanupMaterializedBinaryResources(owner.signal));
-    owner.addCleanup(cleanupMcpOutputArtifacts);
+    owner.addCleanup(acquireMcpOutputArtifactOwner());
     const promise = initializeMcp(pi, ctx, owner, {
       ...(programmaticConfig || options.configPath !== undefined
         ? {
